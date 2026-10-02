@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { DEFAULT_VOICE_LANGUAGE, VOICE_EXAMPLES, VOICE_MODES, type VoiceMode } from "@/data";
+import { DEFAULT_VOICE_LANGUAGE, VOICE_EXAMPLES, VOICE_MODES, VOICE_RESULT_EVENT, type VoiceMode } from "@/data";
 import { useAuth } from "@/hooks/use-auth";
 import { useFetch } from "@/hooks/use-fetch";
 import { useSpeechRecognition } from "@/hooks/use-speech-recognition";
@@ -68,15 +68,19 @@ export function VoiceEntry() {
     async (transcript: string) => {
       setBusy(true);
       try {
-        if (isAdmin && mode === "category") {
-          const { parsed, category } = await voiceService.createCategory(transcript);
+        // Commands ("show all categories") are carried out by the top-bar assistant; only entries are listed here.
+        const result = receiptUrl ? null : await voiceService.command(transcript, isAdmin ? mode : "expense");
+        if (result && !result.entry) {
+          window.dispatchEvent(new CustomEvent(VOICE_RESULT_EVENT, { detail: result }));
+        } else if (result?.entry?.kind === "category") {
+          const { parsed, category } = result.entry;
           addItem({ kind: "category", id: nextId.current++, parsed, category, status: category ? "saved" : "needs-review" });
           if (category) {
             toast.success(`Category “${category.name}” created`);
             reloadCategories();
           }
         } else {
-          const { parsed, expense } = await voiceService.createExpense(transcript, receiptUrl);
+          const { parsed, expense } = result?.entry ?? (await voiceService.createExpense(transcript, receiptUrl));
           addItem({
             kind: "expense",
             id: nextId.current++,

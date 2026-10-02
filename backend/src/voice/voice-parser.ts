@@ -159,6 +159,14 @@ function findAmounts(tokens: string[]) {
 
 export const normalizeSpeech = normalize;
 
+/** Categories named in the tokens: longest name first (so "Office Supplies" beats "Office"), then earliest mention. */
+export function matchCategories<C extends ParserCategory>(tokens: string[], categories: C[]) {
+  return categories
+    .map((c) => ({ category: c, hit: findCategory(tokens, c) }))
+    .filter((m): m is { category: C; hit: { start: number; length: number } } => m.hit !== null)
+    .sort((a, b) => b.hit.length - a.hit.length || a.hit.start - b.hit.start);
+}
+
 /** The spoken amount (preferring one next to a currency word) and the token range it covers. */
 export function parseAmountTokens(tokens: string[]) {
   const hits = findAmounts(tokens);
@@ -176,11 +184,7 @@ export function parseVoiceExpense(transcript: string, categories: ParserCategory
     for (let i = start; i < start + length; i++) used.add(i);
   };
 
-  // Category: prefer the longest name (so "Office Supplies" beats "Office"), then the earliest mention.
-  const matches = categories
-    .map((c) => ({ category: c, hit: findCategory(tokens, c) }))
-    .filter((m): m is { category: ParserCategory; hit: { start: number; length: number } } => m.hit !== null)
-    .sort((a, b) => b.hit.length - a.hit.length || a.hit.start - b.hit.start);
+  const matches = matchCategories(tokens, categories);
   const best = matches[0];
   if (best) markUsed(best.hit.start, best.hit.length);
 

@@ -5,4 +5,5 @@ export const VOICE_ROUTES = {
   READ_RECEIPT: 'receipt',
   READ_CATEGORY_IMAGE: 'category-image',
   CREATE_CATEGORY: 'category',
+  COMMAND: 'command',
 } as const;

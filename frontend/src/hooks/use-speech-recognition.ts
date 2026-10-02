@@ -43,8 +43,11 @@ const ERROR_MESSAGES: Record<string, string> = {
   network: "Speech recognition needs an internet connection.",
 };
 
-/** Browser speech-to-text; keeps listening until `stop()` is called, then calls `onFinal` with the recognised text. */
-export function useSpeechRecognition(onFinal: (text: string) => void) {
+/**
+ * Browser speech-to-text; keeps listening until `stop()` is called, then calls `onFinal` with the recognised text.
+ * With `singlePhrase` it stops by itself after the first pause, for one-shot commands.
+ */
+export function useSpeechRecognition(onFinal: (text: string) => void, { singlePhrase = false } = {}) {
   const supported = useSyncExternalStore(noopSubscribe, () => getRecognitionCtor() !== null, () => false);
   const [listening, setListening] = useState(false);
   const [interim, setInterim] = useState("");
@@ -107,6 +110,7 @@ export function useSpeechRecognition(onFinal: (text: string) => void) {
           else live += res[0].transcript;
         }
         setInterim(`${finalText} ${live}`.trim());
+        if (singlePhrase && finalText.trim() && !live) finalize();
       };
       r.onerror = (e) => {
         if (rec !== r || !FATAL_ERRORS.has(e.error)) return;
@@ -140,7 +144,7 @@ export function useSpeechRecognition(onFinal: (text: string) => void) {
     setInterim("");
     setListening(true);
     spawn();
-  }, []);
+  }, [singlePhrase]);
 
   const stop = useCallback(() => stopRef.current?.(), []);
 

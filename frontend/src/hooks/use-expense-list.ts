@@ -17,6 +17,12 @@ export function useExpenseList({
 } = {}) {
   const [query, setQueryState] = useState(initialQuery);
   const [page, setPage] = useState(1);
+  const [seed, setSeed] = useState(initialQuery);
+  if (seed !== initialQuery) {
+    setSeed(initialQuery);
+    setQueryState(initialQuery);
+    setPage(1);
+  }
   const debounced = useDebouncedValue(query.trim());
 
   const fetcher = useCallback(
