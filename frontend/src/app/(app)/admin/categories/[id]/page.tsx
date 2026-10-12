@@ -11,7 +11,7 @@ import {
   WalletIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { BudgetStatCard, RemainingBudget } from "@/components/categories/budget-stats";
@@ -65,7 +65,7 @@ export default function AdminCategoryDetailPage() {
   const fetchMembers = useCallback(() => categoriesService.members(id), [id]);
   const members = useFetch(fetchMembers);
   const users = useFetch(listUsers);
-  const list = useExpenseList({ categoryId: id });
+  const list = useExpenseList({ categoryId: id, initialQuery: useSearchParams().get("q") ?? "" });
 
   const [categoryFormOpen, setCategoryFormOpen] = useState(false);
   const [deleteCategoryOpen, setDeleteCategoryOpen] = useState(false);

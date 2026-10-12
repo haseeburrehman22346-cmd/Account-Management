@@ -64,7 +64,6 @@ export function VoiceResultCard({
             <p className="text-sm text-muted-foreground">
               {expense.category.name} · {formatDate(expense.date)}
             </p>
-            <p className="truncate text-xs text-muted-foreground">Heard: “{parsed.transcript}”</p>
           </div>
           <p className="text-lg font-semibold tabular-nums">{formatMoney(expense.amount)}</p>
           <div className="flex gap-2">

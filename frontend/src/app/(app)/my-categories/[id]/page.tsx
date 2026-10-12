@@ -2,7 +2,7 @@
 
 import { BarChart3Icon, ChevronLeftIcon, ListIcon, PlusIcon, ReceiptIcon, WalletIcon, XIcon } from "lucide-react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
 import { ExpenseForm } from "@/components/expenses/expense-form";
@@ -38,7 +38,7 @@ export default function MyCategoryDetailPage() {
   const { id } = useParams<{ id: string }>();
   const fetchCategory = useCallback(() => categoriesService.get(id), [id]);
   const category = useFetch(fetchCategory);
-  const list = useExpenseList({ categoryId: id, limit: 5 });
+  const list = useExpenseList({ categoryId: id, limit: 5, initialQuery: useSearchParams().get("q") ?? "" });
 
   const [panelOpen, setPanelOpen] = useState(true);
   const [editing, setEditing] = useState<Expense | null>(null);

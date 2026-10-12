@@ -1,7 +1,8 @@
 "use client";
 
 import { UserPlusIcon } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useState } from "react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { ErrorAlert } from "@/components/shared/error-alert";
@@ -19,8 +20,22 @@ import { usersService } from "@/services";
 import type { ManagedUser } from "@/types";
 
 export default function UsersPage() {
+  return (
+    <Suspense fallback={<TableSkeleton />}>
+      <UsersFromUrl />
+    </Suspense>
+  );
+}
+
+/** Remounts when a voice command changes ?q, so the new query is picked up. */
+function UsersFromUrl() {
+  const q = useSearchParams().get("q") ?? "";
+  return <Users key={q} initialQuery={q} />;
+}
+
+function Users({ initialQuery }: { initialQuery: string }) {
   const { user: me } = useAuth();
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQuery);
   const q = useDebouncedValue(query.trim());
   const fetcher = useCallback(() => usersService.list(q), [q]);
   const { data: users, error, isLoading, reload } = useFetch(fetcher);

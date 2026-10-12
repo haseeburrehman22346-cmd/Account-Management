@@ -49,18 +49,8 @@ export const pickCategoryIcon = (name: string) => {
 
 const titleCase = (words: string[]) => words.map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w)).join(' ');
 
-export function parseVoiceCategory(
-  transcript: string,
-  users: ParserUser[],
-  existingCategories: { id: string; name: string }[],
-): ParsedVoiceCategory {
-  const tokens = normalizeSpeech(transcript).split(' ').filter(Boolean);
-  const used = new Set<number>();
-
-  const amount = parseAmountTokens(tokens);
-  if (amount) for (let i = amount.start; i < amount.end; i++) used.add(i);
-
-  // Users by full name first, then by a unique first name ("Ali" -> Ali Khan).
+/** Users named in the tokens, by full name first, then by a unique first name ("Ali" -> Ali Khan). Marks their tokens as used. */
+export function matchUsers(tokens: string[], users: ParserUser[], used: Set<number>) {
   const userIds = new Set<string>();
   for (const user of [...users].sort((a, b) => b.name.length - a.name.length)) {
     const parts = normalizeSpeech(user.name).split(' ').filter(Boolean);
@@ -79,6 +69,21 @@ export function parseVoiceCategory(
       }
     }
   }
+  return [...userIds];
+}
+
+export function parseVoiceCategory(
+  transcript: string,
+  users: ParserUser[],
+  existingCategories: { id: string; name: string }[],
+): ParsedVoiceCategory {
+  const tokens = normalizeSpeech(transcript).split(' ').filter(Boolean);
+  const used = new Set<number>();
+
+  const amount = parseAmountTokens(tokens);
+  if (amount) for (let i = amount.start; i < amount.end; i++) used.add(i);
+
+  const userIds = matchUsers(tokens, users, used);
 
   const nameWords = tokens.filter((t, i) => !used.has(i) && !COMMAND_WORDS.has(t) && !/^(rs|pkr|rupees?|rupay|rupaye)$/.test(t));
   const name = titleCase(nameWords).slice(0, 100);
@@ -90,7 +95,7 @@ export function parseVoiceCategory(
     transcript: transcript.trim(),
     name,
     budget: amount ? amount.value : null,
-    userIds: [...userIds],
+    userIds,
     icon: pickCategoryIcon(name),
     duplicateOf: duplicate?.id ?? null,
     missing: name ? [] : ['name'],

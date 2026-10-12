@@ -2,6 +2,7 @@ import type {
   CategoryImageResult,
   ReceiptReadResult,
   VoiceCategoryResult,
+  VoiceCommandResult,
   VoiceExpenseResult,
   VoiceParseResult,
 } from "@/types";
@@ -16,4 +17,6 @@ export const voiceService = {
   readCategoryImage: (receiptUrl: string) =>
     apiClient.post<CategoryImageResult>("/voice/category-image", { receiptUrl }),
   createCategory: (transcript: string) => apiClient.post<VoiceCategoryResult>("/voice/category", { transcript }),
+  command: (transcript: string, mode?: "expense" | "category") =>
+    apiClient.post<VoiceCommandResult>("/voice/command", { transcript, mode }),
 };

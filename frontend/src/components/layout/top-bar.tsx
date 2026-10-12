@@ -6,12 +6,13 @@ import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
+import { VoiceAssistant } from "@/components/voice/voice-assistant";
 import { ROUTES } from "@/constants/routes";
 import type { User } from "@/types";
 import { NotificationsMenu } from "./notifications-menu";
 import { UserMenu } from "./user-menu";
 
-export function TopBar({ user }: { user: User }) {
+export function TopBar({ user, onDataChanged }: { user: User; onDataChanged: () => void }) {
   const router = useRouter();
   const [q, setQ] = useState("");
 
@@ -41,6 +42,7 @@ export function TopBar({ user }: { user: User }) {
       )}
 
       <div className="ml-auto flex items-center gap-1">
+        <VoiceAssistant user={user} onDataChanged={onDataChanged} />
         <NotificationsMenu user={user} />
         <UserMenu user={user} />
       </div>

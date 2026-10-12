@@ -3,6 +3,7 @@ import { BadRequestException, ServiceUnavailableException } from '@nestjs/common
 import { readFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
 import { RECEIPT_URL_PATTERN, RECEIPTS_DIR } from '../uploads/receipt-files.js';
+import { levenshtein, normalizeSpeech } from './voice-parser.js';
 
 const DEFAULT_MODEL = 'gpt-5.4-mini';
 const NO_CATEGORY = 'none';
@@ -23,10 +24,13 @@ export interface ReceiptCategory {
 export interface ReceiptLine {
   title: string;
   amount: number;
+  categoryId: string | null;
 }
 
 export interface ReadReceipt {
   categoryId: string | null;
+  /** The category name written on the image, whether or not it exists in the app. */
+  writtenCategory: string;
   total: number | null;
   title: string;
   date: string | null;
@@ -56,7 +60,7 @@ async function askAboutUpload<T>(uploadUrl: string, name: string, schema: Record
   const source: OpenAI.Chat.ChatCompletionContentPart =
     ext === '.pdf'
       ? { type: 'file', file: { filename: file, file_data: dataUrl } }
-      : { type: 'image_url', image_url: { url: dataUrl } };
+      : { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } };
 
   let completion: OpenAI.Chat.ChatCompletion;
   try {
@@ -82,15 +86,17 @@ async function askAboutUpload<T>(uploadUrl: string, name: string, schema: Record
 /** Reads the lines written on an uploaded receipt image or PDF. */
 export async function readReceipt(receiptUrl: string, categories: ReceiptCategory[], today: string): Promise<ReadReceipt> {
   const categoryList = categories.map((c) => `- ${c.id}: ${c.name}`).join('\n');
+  const categoryEnum = { type: 'string', enum: [...categories.map((c) => c.id), NO_CATEGORY] };
   const out = await askAboutUpload<ReadReceipt>(
     receiptUrl,
     'receipt',
     {
       type: 'object',
       additionalProperties: false,
-      required: ['categoryId', 'total', 'title', 'date', 'items'],
+      required: ['writtenCategory', 'categoryId', 'total', 'title', 'date', 'items'],
       properties: {
-        categoryId: { type: 'string', enum: [...categories.map((c) => c.id), NO_CATEGORY] },
+        writtenCategory: { type: 'string' },
+        categoryId: categoryEnum,
         total: { type: ['number', 'null'] },
         title: { type: 'string' },
         date: { type: ['string', 'null'] },
@@ -99,30 +105,48 @@ export async function readReceipt(receiptUrl: string, categories: ReceiptCategor
           items: {
             type: 'object',
             additionalProperties: false,
-            required: ['title', 'amount'],
-            properties: { title: { type: 'string' }, amount: { type: 'number' } },
+            required: ['title', 'amount', 'categoryId'],
+            properties: { title: { type: 'string' }, amount: { type: 'number' }, categoryId: categoryEnum },
           },
         },
       },
     },
-    `This image is a receipt, bill or handwritten list of expenses. Today is ${today}. Amounts are in PKR.
+    `This image is a receipt, bill or handwritten list of expenses. Today is ${today}. Amounts are in PKR. Handwriting can be unclear, so read words by their most likely meaning.
 
-Categories the user can record expenses in:
+Categories the user can record expenses in (id: name):
 ${categoryList}
 
 Return:
-- items: every line that has its own amount, in the order written, with a short title and the amount as a number. Skip subtotal, tax and total lines.
+- writtenCategory: the category name written on the image, in Title Case; empty string if none is written. When there is a "Category" or "Categories" heading or column, this is the word written under or next to it (e.g. "Hostel"), never the heading word itself.
+- categoryId: when a category is written, the id of the existing category with that name, allowing for unclear handwriting and spelling ("Hostal" = "Hostel"); "${NO_CATEGORY}" when the written category is not in the list, never a different category instead. When nothing is written, the category that best fits the items, or "${NO_CATEGORY}".
+- items: every line that has its own amount, in the order written, with a short title, the amount as a number, and categoryId: the category written next to that line if the list gives one per line, otherwise the same as the overall categoryId. Skip subtotal, tax and total lines and the header row.
 - total: the grand total paid as a number, or null if none is written.
-- title: a short description of the whole receipt, under 80 characters, e.g. "Grocery at Imtiaz".
-- categoryId: the id of the category that best fits, or "${NO_CATEGORY}" if none fits.
+- title: a short description of the whole receipt, under 80 characters, e.g. "Grocery at Imtiaz" or "Hostel expenses".
 - date: the date on the receipt as YYYY-MM-DD, or null if there is none.`,
   );
 
+  const known = (id: string | null | undefined) => (categories.some((c) => c.id === id) ? id! : null);
+  const writtenCategory = /^categor/i.test(out.writtenCategory.trim()) ? '' : out.writtenCategory.trim().slice(0, 100);
+  // Handwriting is often read a letter or two off ("Hotel", "Hostal"), so take the one clearly closest name.
+  const written = normalizeSpeech(writtenCategory);
+  const close = written
+    ? categories
+        .map((c) => ({ id: c.id, distance: levenshtein(normalizeSpeech(c.name), written) }))
+        .filter((c) => c.distance <= Math.max(1, Math.floor(written.length / 3)))
+        .sort((a, b) => a.distance - b.distance)
+    : [];
+  const byName = close.length && (close.length === 1 || close[0].distance < close[1].distance) ? close[0].id : null;
+  const categoryId = known(out.categoryId) ?? byName;
   const items = out.items
-    .map((line) => ({ title: line.title.trim().slice(0, 200), amount: money(line.amount) }))
+    .map((line) => ({
+      title: line.title.trim().slice(0, 200),
+      amount: money(line.amount),
+      categoryId: known(line.categoryId) ?? categoryId,
+    }))
     .filter((line): line is ReceiptLine => !!line.title && line.amount !== null);
   return {
-    categoryId: categories.some((c) => c.id === out.categoryId) ? out.categoryId : null,
+    categoryId,
+    writtenCategory,
     total: money(out.total) ?? money(items.reduce((sum, line) => sum + line.amount, 0)),
     title: out.title.trim().slice(0, 200) || 'Receipt',
     date: out.date && /^\d{4}-\d{2}-\d{2}$/.test(out.date) && out.date <= today ? out.date : null,

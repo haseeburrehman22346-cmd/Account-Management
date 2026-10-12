@@ -52,9 +52,11 @@ const FILLER = new Set([
   'hai', 'hain', 'tha', 'the', 'daal', 'dalo', 'likho', 'day', 'before',
   'karna', 'karni', 'karne', 'kar', 'karo', 'kardo', 'do', 'dein', 'den', 'de', 'dijiye', 'chahta', 'chahti', 'chahte',
   'hoon', 'hun', 'hu', 'aap', 'ap', 'mujhe', 'mera', 'meri', 'mere', 'please', 'plz', 'ye', 'yeh', 'wo', 'woh',
+  'ek', 'aik', 'ik', 'aur', 'or', 'name', 'named', 'naam', 'nam', 'title', 'called', 'likh', 'likhna', 'likhdo', 'rakh',
+  'rakho', 'rakhna', 'jis', 'jiska', 'jiski', 'uska', 'uski', 'iska', 'iski', 'ho', 'hona',
 ]);
 
-const JOINERS = new Set(['with', 'for', 'and']);
+const JOINERS = new Set(['with', 'for', 'and', 'aur', 'or']);
 
 const normalize = (text: string) =>
   text
@@ -67,7 +69,7 @@ const normalize = (text: string) =>
 
 const singular = (word: string) => word.replace(/(ies)$/, 'y').replace(/(es|s)$/, '');
 
-function levenshtein(a: string, b: string) {
+export function levenshtein(a: string, b: string) {
   const dp = Array.from({ length: b.length + 1 }, (_, i) => i);
   for (let i = 1; i <= a.length; i++) {
     let prev = dp[0];
@@ -159,6 +161,14 @@ function findAmounts(tokens: string[]) {
 
 export const normalizeSpeech = normalize;
 
+/** Categories named in the tokens: longest name first (so "Office Supplies" beats "Office"), then earliest mention. */
+export function matchCategories<C extends ParserCategory>(tokens: string[], categories: C[]) {
+  return categories
+    .map((c) => ({ category: c, hit: findCategory(tokens, c) }))
+    .filter((m): m is { category: C; hit: { start: number; length: number } } => m.hit !== null)
+    .sort((a, b) => b.hit.length - a.hit.length || a.hit.start - b.hit.start);
+}
+
 /** The spoken amount (preferring one next to a currency word) and the token range it covers. */
 export function parseAmountTokens(tokens: string[]) {
   const hits = findAmounts(tokens);
@@ -176,11 +186,7 @@ export function parseVoiceExpense(transcript: string, categories: ParserCategory
     for (let i = start; i < start + length; i++) used.add(i);
   };
 
-  // Category: prefer the longest name (so "Office Supplies" beats "Office"), then the earliest mention.
-  const matches = categories
-    .map((c) => ({ category: c, hit: findCategory(tokens, c) }))
-    .filter((m): m is { category: ParserCategory; hit: { start: number; length: number } } => m.hit !== null)
-    .sort((a, b) => b.hit.length - a.hit.length || a.hit.start - b.hit.start);
+  const matches = matchCategories(tokens, categories);
   const best = matches[0];
   if (best) markUsed(best.hit.start, best.hit.length);
 

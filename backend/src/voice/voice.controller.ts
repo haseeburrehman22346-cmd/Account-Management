@@ -1,5 +1,5 @@
 import { Body, Controller, HttpCode, Post } from '@nestjs/common';
-import { IsString, Matches, MaxLength, MinLength, ValidateIf } from 'class-validator';
+import { IsIn, IsOptional, IsString, Matches, MaxLength, MinLength, ValidateIf } from 'class-validator';
 import type { AuthUser } from '../auth/auth.types.js';
 import { CurrentUser, Roles } from '../auth/decorators.js';
 import { VOICE_ROUTES } from '../routes/index.js';
@@ -17,6 +17,13 @@ class VoiceExpenseInput extends VoiceInput {
   @ValidateIf((_, value) => value !== null && value !== undefined)
   @Matches(RECEIPT_URL_PATTERN, { message: 'receiptUrl must be an uploaded receipt' })
   receiptUrl?: string | null;
+}
+
+class VoiceCommandInput extends VoiceInput {
+  /** The Voice Entry tab the sentence was spoken in; decides what an unrecognised sentence means. */
+  @IsOptional()
+  @IsIn(['expense', 'category'])
+  mode?: 'expense' | 'category';
 }
 
 class ReceiptInput {
@@ -56,5 +63,11 @@ export class VoiceController {
   @Roles('admin')
   createCategory(@Body() dto: VoiceInput, @CurrentUser() user: AuthUser) {
     return this.voice.createCategory(dto.transcript, user);
+  }
+
+  @Post(VOICE_ROUTES.COMMAND)
+  @HttpCode(200)
+  command(@Body() dto: VoiceCommandInput, @CurrentUser() user: AuthUser) {
+    return this.voice.command(dto.transcript, user, dto.mode);
   }
 }

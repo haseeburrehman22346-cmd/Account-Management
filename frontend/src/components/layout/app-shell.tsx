@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { FullPageLoader } from "@/components/shared/loading-state";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { homeFor, ROUTES } from "@/constants/routes";
@@ -14,6 +14,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { user, ready } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
+  const [dataVersion, setDataVersion] = useState(0);
+  const refreshPage = useCallback(() => setDataVersion((v) => v + 1), []);
 
   const wrongArea =
     !!user &&
@@ -33,8 +35,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <SidebarProvider>
       <AppSidebar user={user} />
       <SidebarInset className="min-w-0 bg-background">
-        <TopBar user={user} />
-        <main className="mx-auto w-full max-w-7xl flex-1 space-y-6 p-4 md:p-6">{children}</main>
+        <TopBar user={user} onDataChanged={refreshPage} />
+        {/* Remounting the page makes it refetch after a voice command changed data. */}
+        <main key={dataVersion} className="mx-auto w-full max-w-7xl flex-1 space-y-6 p-4 md:p-6">
+          {children}
+        </main>
       </SidebarInset>
     </SidebarProvider>
   );

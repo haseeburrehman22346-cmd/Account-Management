@@ -10,7 +10,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { errorMessage, formatMoney } from "@/lib/format";
-import { assetUrl, expensesService } from "@/services";
+import { assetUrl, categoriesService, expensesService } from "@/services";
 import type { Category, Expense, ReceiptReadResult } from "@/types";
 
 interface Row {
@@ -27,28 +27,57 @@ export function ReceiptReviewCard({
   categories,
   onAdded,
   onDiscard,
+  onCategoryCreated,
 }: {
   result: ReceiptReadResult;
   categories: Category[];
   onAdded: (expenses: Expense[]) => void;
   onDiscard: () => void;
+  onCategoryCreated: () => void;
 }) {
-  const defaultCategoryId = result.category?.id ?? categories[0]?.id ?? "";
+  // Never preselect a category the image didn't point to; the user picks one instead.
+  const [defaultCategoryId, setDefaultCategoryId] = useState(result.category?.id ?? "");
+  const [created, setCreated] = useState<Category | null>(null);
+  const options = created && !categories.some((c) => c.id === created.id) ? [...categories, created] : categories;
   const nextKey = useRef(result.items.length + 2);
   const [rows, setRows] = useState<Row[]>(() =>
     (result.items.length
       ? result.items
-      : [{ title: result.title, amount: result.total ?? 0 }]
+      : [{ title: result.title, amount: result.total ?? 0, categoryId: null }]
     ).map((line, i) => ({
       key: i + 1,
       checked: true,
       title: line.title,
       amount: line.amount ? String(line.amount) : "",
-      categoryId: defaultCategoryId,
+      categoryId: line.categoryId ?? defaultCategoryId,
     })),
   );
   const [date, setDate] = useState(result.date);
   const [saving, setSaving] = useState(false);
+  const missingCategory = result.writtenCategory && !result.category && !created ? result.writtenCategory : "";
+
+  async function createWrittenCategory() {
+    if (!result.newCategory) return;
+    setSaving(true);
+    try {
+      const category = await categoriesService.create({
+        ...result.newCategory,
+        description: "",
+        budgetLimit: null,
+        status: "active",
+        assignedUserIds: [],
+      });
+      setCreated(category);
+      setDefaultCategoryId(category.id);
+      setRows((prev) => prev.map((r) => (r.categoryId ? r : { ...r, categoryId: category.id })));
+      toast.success(`Category "${category.name}" created`);
+      onCategoryCreated();
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  }
 
   const update = (key: number, patch: Partial<Row>) =>
     setRows((prev) => prev.map((r) => (r.key === key ? { ...r, ...patch } : r)));
@@ -57,7 +86,7 @@ export function ReceiptReviewCard({
   const selected = rows.filter((r) => r.checked);
   const selectedTotal = selected.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
   const canAddSelected = selected.length > 0 && selected.every(isValid) && !!date;
-  const canAddOne = selectedTotal > 0 && !!defaultCategoryId && !!date;
+  const canAddOne = selectedTotal > 0 && !!(selected[0]?.categoryId || defaultCategoryId) && !!date;
 
   async function save(entries: { categoryId: string; title: string; amount: number }[]) {
     setSaving(true);
@@ -92,7 +121,7 @@ export function ReceiptReviewCard({
     save(selected.map((r) => ({ categoryId: r.categoryId, title: r.title, amount: Number(r.amount) })));
 
   const addAsOne = () =>
-    save([{ categoryId: selected[0]?.categoryId ?? defaultCategoryId, title: result.title, amount: selectedTotal }]);
+    save([{ categoryId: selected[0]?.categoryId || defaultCategoryId, title: result.title, amount: selectedTotal }]);
 
   return (
     <Card>
@@ -118,6 +147,20 @@ export function ReceiptReviewCard({
       </CardHeader>
 
       <CardContent className="space-y-3">
+        {missingCategory && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed p-3 text-sm">
+            <span className="mr-auto">
+              The image says category <b>“{missingCategory}”</b>, but there is no such category.{" "}
+              {result.newCategory ? "Create it, or pick a category below." : "Pick a category below or ask an admin to create it."}
+            </span>
+            {result.newCategory && (
+              <Button size="sm" onClick={createWrittenCategory} disabled={saving}>
+                <PlusIcon /> Create “{missingCategory}”
+              </Button>
+            )}
+          </div>
+        )}
+
         <div className="flex items-center gap-2 text-sm">
           <label htmlFor="receipt-date" className="text-muted-foreground">
             Date
@@ -163,7 +206,7 @@ export function ReceiptReviewCard({
                   <SelectValue placeholder="Category" />
                 </SelectTrigger>
                 <SelectContent>
-                  {categories.map((c) => (
+                  {options.map((c) => (
                     <SelectItem key={c.id} value={c.id}>
                       <CategoryIcon icon={c.icon} /> {c.name}
                     </SelectItem>

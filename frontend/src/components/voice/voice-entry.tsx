@@ -1,6 +1,7 @@
 "use client";
 
 import { LightbulbIcon, Trash2Icon } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { CategoryFormDialog } from "@/components/categories/category-form-dialog";
@@ -10,7 +11,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { DEFAULT_VOICE_LANGUAGE, VOICE_EXAMPLES, VOICE_MODES, type VoiceMode } from "@/data";
+import { categoryHref, ROUTES } from "@/constants/routes";
+import { DEFAULT_VOICE_LANGUAGE, VOICE_EXAMPLES, VOICE_MODES, VOICE_RESULT_EVENT, type VoiceMode } from "@/data";
 import { useAuth } from "@/hooks/use-auth";
 import { useFetch } from "@/hooks/use-fetch";
 import { useSpeechRecognition } from "@/hooks/use-speech-recognition";
@@ -43,6 +45,7 @@ const HINTS: Record<VoiceMode, { idle: string; placeholder: string; help: string
 /** Speak or type to add an expense, or (admins) to create a category. */
 export function VoiceEntry() {
   const { user } = useAuth();
+  const router = useRouter();
   const isAdmin = user?.role === "admin";
   const { data: allCategories, reload: reloadCategories } = useFetch(listCategories);
   const categories = useMemo(() => (allCategories ?? []).filter((c) => c.canAddExpense), [allCategories]);
@@ -64,19 +67,39 @@ export function VoiceEntry() {
 
   const addItem = (item: Item) => setItems((prev) => [item, ...prev].slice(0, 20));
 
+  /** After saving, opens the Categories page for new categories and the Expenses page for new expenses. */
+  const openSaved = useCallback(
+    (kind: "category" | "expense", categoryIds: string[]) => {
+      if (!user || !categoryIds.length) return;
+      if (user.role === "admin") {
+        router.push(kind === "category" ? ROUTES.admin.categories : ROUTES.admin.expenses);
+        return;
+      }
+      // Users have no all-expenses page; their expenses are listed inside the category.
+      const unique = [...new Set(categoryIds)];
+      router.push(unique.length === 1 ? categoryHref(user, unique[0]) : ROUTES.user.categories);
+    },
+    [router, user],
+  );
+
   const submit = useCallback(
     async (transcript: string) => {
       setBusy(true);
       try {
-        if (isAdmin && mode === "category") {
-          const { parsed, category } = await voiceService.createCategory(transcript);
+        // Commands ("show all categories") are carried out by the top-bar assistant; only entries are listed here.
+        const result = receiptUrl ? null : await voiceService.command(transcript, isAdmin ? mode : "expense");
+        if (result && !result.entry) {
+          window.dispatchEvent(new CustomEvent(VOICE_RESULT_EVENT, { detail: result }));
+        } else if (result?.entry?.kind === "category") {
+          const { parsed, category } = result.entry;
           addItem({ kind: "category", id: nextId.current++, parsed, category, status: category ? "saved" : "needs-review" });
           if (category) {
             toast.success(`Category “${category.name}” created`);
             reloadCategories();
+            openSaved("category", [category.id]);
           }
         } else {
-          const { parsed, expense } = await voiceService.createExpense(transcript, receiptUrl);
+          const { parsed, expense } = result?.entry ?? (await voiceService.createExpense(transcript, receiptUrl));
           addItem({
             kind: "expense",
             id: nextId.current++,
@@ -86,7 +109,10 @@ export function VoiceEntry() {
             receiptUrl,
           });
           setReceiptUrl(null);
-          if (expense) toast.success(`${formatMoney(expense.amount)} added to ${expense.category.name}`);
+          if (expense) {
+            toast.success(`${formatMoney(expense.amount)} added to ${expense.category.name}`);
+            openSaved("expense", [expense.categoryId]);
+          }
         }
       } catch (err) {
         toast.error(errorMessage(err));
@@ -94,7 +120,7 @@ export function VoiceEntry() {
         setBusy(false);
       }
     },
-    [isAdmin, mode, reloadCategories, receiptUrl],
+    [isAdmin, mode, reloadCategories, receiptUrl, openSaved],
   );
 
   const speech = useSpeechRecognition(submit);
@@ -132,6 +158,7 @@ export function VoiceEntry() {
       });
     }
     setReceipt(null);
+    openSaved("expense", expenses.map((e) => e.categoryId));
   }
 
   async function readCategoryImage(url: string) {
@@ -166,6 +193,7 @@ export function VoiceEntry() {
       });
     }
     reloadCategories();
+    openSaved("category", created.map((c) => c.id));
   }
 
   async function undo(item: Item) {
@@ -187,10 +215,14 @@ export function VoiceEntry() {
     }
   }
 
-  const expenseSaved = (item: Item, expense: Expense) => updateItem(item.id, { expense, status: "saved" });
+  const expenseSaved = (item: Item, expense: Expense) => {
+    updateItem(item.id, { expense, status: "saved" });
+    openSaved("expense", [expense.categoryId]);
+  };
   const categorySaved = (item: Item, category: Category) => {
     updateItem(item.id, { category, status: "saved" });
     reloadCategories();
+    openSaved("category", [category.id]);
   };
   const dismiss = (item: Item) => setItems((prev) => prev.filter((it) => it.id !== item.id));
 
@@ -242,6 +274,7 @@ export function VoiceEntry() {
             categories={categories}
             onAdded={receiptAdded}
             onDiscard={() => setReceipt(null)}
+            onCategoryCreated={reloadCategories}
           />
         )}
 
@@ -347,7 +380,6 @@ export function VoiceEntry() {
             title: completing.parsed.title,
             amount: completing.parsed.amount,
             date: completing.parsed.date,
-            note: `Voice: "${completing.parsed.transcript}"`,
             receiptUrl: completing.receiptUrl,
           }}
           onSaved={(expense) => {
