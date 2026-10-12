@@ -52,9 +52,11 @@ const FILLER = new Set([
   'hai', 'hain', 'tha', 'the', 'daal', 'dalo', 'likho', 'day', 'before',
   'karna', 'karni', 'karne', 'kar', 'karo', 'kardo', 'do', 'dein', 'den', 'de', 'dijiye', 'chahta', 'chahti', 'chahte',
   'hoon', 'hun', 'hu', 'aap', 'ap', 'mujhe', 'mera', 'meri', 'mere', 'please', 'plz', 'ye', 'yeh', 'wo', 'woh',
+  'ek', 'aik', 'ik', 'aur', 'or', 'name', 'named', 'naam', 'nam', 'title', 'called', 'likh', 'likhna', 'likhdo', 'rakh',
+  'rakho', 'rakhna', 'jis', 'jiska', 'jiski', 'uska', 'uski', 'iska', 'iski', 'ho', 'hona',
 ]);
 
-const JOINERS = new Set(['with', 'for', 'and']);
+const JOINERS = new Set(['with', 'for', 'and', 'aur', 'or']);
 
 const normalize = (text: string) =>
   text
@@ -67,7 +69,7 @@ const normalize = (text: string) =>
 
 const singular = (word: string) => word.replace(/(ies)$/, 'y').replace(/(es|s)$/, '');
 
-function levenshtein(a: string, b: string) {
+export function levenshtein(a: string, b: string) {
   const dp = Array.from({ length: b.length + 1 }, (_, i) => i);
   for (let i = 1; i <= a.length; i++) {
     let prev = dp[0];

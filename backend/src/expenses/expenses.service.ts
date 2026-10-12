@@ -66,6 +66,14 @@ export class ExpensesService {
     };
   }
 
+  /** One expense, if it is in a category the user may see. */
+  async findVisible(id: string, user: AuthUser) {
+    if (!Types.ObjectId.isValid(id)) throw new NotFoundException('Expense not found');
+    const expense = await this.findOne(id, user);
+    await this.categories.findAccessible(expense.categoryId, user);
+    return expense;
+  }
+
   async create(categoryId: string, input: ExpenseInput, user: AuthUser) {
     const category = await this.categories.findAccessible(categoryId, user);
     if (!category.canAddExpense) throw new ForbiddenException('You are not allowed to add expenses here');

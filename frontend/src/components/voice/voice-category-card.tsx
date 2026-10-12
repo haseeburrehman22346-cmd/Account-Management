@@ -58,7 +58,6 @@ export function VoiceCategoryCard({
               ? `Assigned to ${category.assignedUsers.map((u) => u.name).join(", ")}`
               : "Not assigned yet"}
           </p>
-          <p className="truncate text-xs text-muted-foreground">Heard: “{parsed.transcript}”</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" size="sm" asChild>

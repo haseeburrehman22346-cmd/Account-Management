@@ -86,6 +86,7 @@ export interface CategoryImageResult {
 export interface ReceiptLine {
   title: string;
   amount: number;
+  categoryId: string | null;
 }
 
 export interface ReceiptReadResult {
@@ -95,5 +96,9 @@ export interface ReceiptReadResult {
   date: string;
   total: number | null;
   category: ExpenseCategoryRef | null;
+  /** The category name written on the image, even when no such category exists. */
+  writtenCategory: string;
+  /** Admins only: the written category, ready to create when it doesn't exist yet. */
+  newCategory: { name: string; icon: string; color: string } | null;
   items: ReceiptLine[];
 }
