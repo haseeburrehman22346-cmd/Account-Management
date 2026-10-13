@@ -20,6 +20,8 @@ const category = (id: string, name: string, totalSpent: number, thisMonthSpent: 
   name,
   icon: 'folder',
   color: 'blue',
+  status: 'active',
+  budgetLimit: 5000,
   canAddExpense: true,
   totalSpent,
   thisMonthSpent,
@@ -63,6 +65,7 @@ const intent = (over: Partial<VoiceIntent>): VoiceIntent => ({
   grant: true,
   active: true,
   clarification: '',
+  reply: '',
   ...over,
 });
 
@@ -304,6 +307,38 @@ describe('VoiceService.command with the AI reading', () => {
 
     expect(result).toMatchObject({ ok: false, message: 'Only admins can do that' });
     expect(categories.update).not.toHaveBeenCalled();
+  });
+
+  it('answers a question in the chat with the AI reply and changes nothing', async () => {
+    const { service, expenses, categories, ai } = setup();
+    ai.mockResolvedValue(intent({ intent: 'unknown', reply: 'Aap ki 2 categories hain: Laptop aur Wifi.' }));
+
+    const result = await service.command('meri kitni categories hain?', admin, 'chat');
+
+    expect(result).toMatchObject({ ok: true, changed: false, action: { type: 'none' }, entry: null });
+    expect(result.message).toBe('Aap ki 2 categories hain: Laptop aur Wifi.');
+    expect(ai.mock.calls[0][1].categories[0].summary).toContain('PKR 1,000 this month');
+    expect(expenses.create).not.toHaveBeenCalled();
+    expect(categories.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps the conversation for follow-ups until a new chat is started', async () => {
+    const { service, ai } = setup();
+    ai.mockResolvedValue(intent({ intent: 'unknown', reply: 'Hello!' }));
+
+    await service.command('hello', admin, 'chat');
+    await service.command('aur batao', admin, 'chat');
+    expect(ai.mock.calls[1][1].history).toEqual([{ said: 'hello', reply: 'Hello!' }]);
+
+    await service.command('hello again', admin, 'chat', true);
+    expect(ai.mock.calls[2][1].history).toEqual([]);
+  });
+
+  it('fails the chat request when the AI is unavailable, so it can be retried', async () => {
+    const { service, ai } = setup();
+    ai.mockResolvedValue(null);
+
+    await expect(service.command('hello', admin, 'chat')).rejects.toThrow('OpenAI');
   });
 
   it('does nothing when the AI is unavailable', async () => {

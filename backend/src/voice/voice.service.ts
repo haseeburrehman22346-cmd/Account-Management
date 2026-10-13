@@ -109,8 +109,12 @@ interface Conversation {
 }
 
 const AI_UNAVAILABLE = "Voice needs OpenAI and it couldn't be reached — check OPENAI_API_KEY in the backend .env and try again";
-const CONVERSATION_TTL_MS = 10 * 60 * 1000;
-const CONVERSATION_TURNS = 4;
+const CONVERSATION_TTL_MS = 30 * 60 * 1000;
+const CONVERSATION_TURNS = 10;
+/** How many of the newest expenses the chat assistant is shown to answer questions from. */
+const CHAT_EXPENSES = 50;
+
+export type VoiceMode = 'expense' | 'category' | 'chat';
 
 const remember = (e: { id: string; title: string; amount: number; date: string; category: { name: string } }) => ({
   id: e.id,
@@ -313,9 +317,10 @@ export class VoiceService {
   }
 
   /** Runs a spoken command such as "show all categories" or "give Ali access to Food" with the caller's permissions. */
-  async command(transcript: string, user: AuthUser, mode?: 'expense' | 'category'): Promise<VoiceCommandResult> {
+  async command(transcript: string, user: AuthUser, mode?: VoiceMode, reset = false): Promise<VoiceCommandResult> {
     const now = Date.now();
     for (const [id, c] of this.conversations) if (now - c.at > CONVERSATION_TTL_MS) this.conversations.delete(id);
+    if (reset) this.conversations.delete(user.id);
     const conversation = this.conversations.get(user.id) ?? { turns: [], lastExpense: null, at: now };
 
     const result = await this.run(transcript, user, mode, conversation);
@@ -328,21 +333,35 @@ export class VoiceService {
   private async run(
     transcript: string,
     user: AuthUser,
-    mode: 'expense' | 'category' | undefined,
+    mode: VoiceMode | undefined,
     conversation: Conversation,
   ): Promise<VoiceCommandResult> {
     const isAdmin = user.role === 'admin';
-    const [categories, users] = await Promise.all([this.categories.list(user), isAdmin ? this.users.list() : []]);
+    const [categories, users, recent] = await Promise.all([
+      this.categories.list(user),
+      isAdmin ? this.users.list() : [],
+      mode === 'chat' ? this.expenses.search(user, { page: 1, limit: CHAT_EXPENSES }) : null,
+    ]);
     const ai = await readVoiceIntent(transcript, {
-      categories,
+      categories:
+        mode === 'chat'
+          ? categories.map((c) => ({
+              id: c.id,
+              name: c.name,
+              summary: `${c.status}, budget ${c.budgetLimit == null ? 'not set' : money(c.budgetLimit)}, spent ${money(c.thisMonthSpent)} this month and ${money(c.totalSpent)} in total over ${c.expenseCount} expenses`,
+            }))
+          : categories,
       users,
       isAdmin,
       today: todayIso(),
       mode,
       history: conversation.turns,
       lastExpense: conversation.lastExpense,
+      recentExpenses: recent?.items.map((e) => `${e.date}, ${e.category.name}, ${e.title}, ${money(e.amount)}, ${e.paidBy.name}`),
     });
     if (!ai) {
+      // The chat shows this as an error the user can retry.
+      if (mode === 'chat') throw new ServiceUnavailableException(AI_UNAVAILABLE);
       return { transcript: transcript.trim(), ok: false, message: AI_UNAVAILABLE, action: { type: 'none' }, changed: false, entry: null };
     }
     const command: Command = toCommand(ai) ?? { type: 'unknown' };
@@ -623,6 +642,7 @@ export class VoiceService {
       case 'help':
         return done('Say what you want in your own words: add, show, change or delete a category or an expense', { type: 'help' });
       default:
+        if (ai.intent === 'unknown' && ai.reply) return done(ai.reply);
         return fail(
           ai.intent === 'unknown'
             ? `Sorry, I didn't understand "${transcript.trim()}"`

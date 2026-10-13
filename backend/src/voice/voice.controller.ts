@@ -1,10 +1,10 @@
 import { Body, Controller, HttpCode, Post } from '@nestjs/common';
-import { IsIn, IsOptional, IsString, Matches, MaxLength, MinLength, ValidateIf } from 'class-validator';
+import { IsBoolean, IsIn, IsOptional, IsString, Matches, MaxLength, MinLength, ValidateIf } from 'class-validator';
 import type { AuthUser } from '../auth/auth.types.js';
 import { CurrentUser, Roles } from '../auth/decorators.js';
 import { VOICE_ROUTES } from '../routes/index.js';
 import { RECEIPT_URL_PATTERN } from '../uploads/receipt-files.js';
-import { VoiceService } from './voice.service.js';
+import { VoiceService, type VoiceMode } from './voice.service.js';
 
 class VoiceInput {
   @IsString()
@@ -20,10 +20,15 @@ class VoiceExpenseInput extends VoiceInput {
 }
 
 class VoiceCommandInput extends VoiceInput {
-  /** The Voice Entry tab the sentence was spoken in; decides what an unrecognised sentence means. */
+  /** Where the sentence came from: a Voice Entry tab or the assistant chat. */
   @IsOptional()
-  @IsIn(['expense', 'category'])
-  mode?: 'expense' | 'category';
+  @IsIn(['expense', 'category', 'chat'])
+  mode?: VoiceMode;
+
+  /** Starts a new conversation, forgetting the earlier turns. */
+  @IsOptional()
+  @IsBoolean()
+  reset?: boolean;
 }
 
 class ReceiptInput {
@@ -68,6 +73,6 @@ export class VoiceController {
   @Post(VOICE_ROUTES.COMMAND)
   @HttpCode(200)
   command(@Body() dto: VoiceCommandInput, @CurrentUser() user: AuthUser) {
-    return this.voice.command(dto.transcript, user, dto.mode);
+    return this.voice.command(dto.transcript, user, dto.mode, dto.reset);
   }
 }

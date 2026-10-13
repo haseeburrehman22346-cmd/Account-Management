@@ -21,7 +21,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     !!user &&
     ((user.role !== "admin" && pathname.startsWith("/admin")) ||
       (user.role === "admin" &&
-        (pathname.startsWith(ROUTES.user.categories) || pathname === ROUTES.user.profile || pathname === ROUTES.user.voice)));
+        (pathname.startsWith(ROUTES.user.categories) || pathname === ROUTES.user.profile ||
+          pathname === ROUTES.user.voice ||
+          pathname === ROUTES.user.chat)));
 
   useEffect(() => {
     if (!ready) return;

@@ -62,6 +62,8 @@ export interface VoiceIntent {
   active: boolean;
   /** A question to ask instead of acting, when the sentence is ambiguous or misses something required. */
   clarification: string;
+  /** The assistant's own answer when the user is chatting or asking something rather than giving a command. */
+  reply: string;
 }
 
 export interface VoiceTurn {
@@ -70,18 +72,21 @@ export interface VoiceTurn {
 }
 
 export interface VoiceIntentContext {
-  categories: { id: string; name: string }[];
+  /** `summary` adds what the assistant may need to answer questions, e.g. the budget and spending. */
+  categories: { id: string; name: string; summary?: string }[];
   users: { id: string; name: string }[];
   isAdmin: boolean;
   today: string;
-  /** The Voice Entry tab the user is on, if any. */
-  mode?: 'expense' | 'category';
+  /** The Voice Entry tab the user is on, or the assistant chat. */
+  mode?: 'expense' | 'category' | 'chat';
   /** Set when the caller already knows what the sentence is for. */
   force?: 'add-expense' | 'create-category';
   /** Earlier sentences of this conversation, oldest first. */
   history?: VoiceTurn[];
   /** The expense the conversation was last about, so "change its amount" can refer to it. */
   lastExpense?: { title: string; category: string; amount: number; date: string } | null;
+  /** The newest expenses the user can see, one per line, so the assistant can answer questions about them. */
+  recentExpenses?: string[];
 }
 
 let client: OpenAI | null = null;
@@ -91,7 +96,7 @@ const SCHEMA = {
   additionalProperties: false,
   required: [
     'intent', 'categoryId', 'userIds', 'paidById', 'amount', 'title', 'name', 'icon', 'date', 'q', 'target', 'updates',
-    'period', 'page', 'theme', 'grant', 'active', 'clarification',
+    'period', 'page', 'theme', 'grant', 'active', 'clarification', 'reply',
   ],
   properties: {
     intent: { type: 'string', enum: VOICE_INTENTS },
@@ -117,17 +122,21 @@ const SCHEMA = {
     grant: { type: 'boolean' },
     active: { type: 'boolean' },
     clarification: { type: 'string' },
+    reply: { type: 'string' },
   },
 };
 
-const list = (rows: { id: string; name: string }[]) => (rows.length ? rows.map((r) => `- ${r.id}: ${r.name}`).join('\n') : '(none)');
+const list = (rows: { id: string; name: string; summary?: string }[]) =>
+  rows.length ? rows.map((r) => `- ${r.id}: ${r.name}${r.summary ? ` (${r.summary})` : ''}`).join('\n') : '(none)';
 
 export function buildVoicePrompt(transcript: string, ctx: VoiceIntentContext) {
   const situation = ctx.force
     ? `The sentence is known to be a "${ctx.force}" request; use that intent.`
-    : ctx.mode
-      ? `The user is on the "${ctx.mode === 'expense' ? 'add expense' : 'create category'}" tab of the voice page. That is only a hint for a sentence that could be read either way; any command can be spoken from any tab, so follow what the sentence asks for.`
-      : 'The user spoke from somewhere in the app.';
+    : ctx.mode === 'chat'
+      ? 'The user is talking to the assistant in a chat, by typing or by voice. They may give a command, ask a question or just talk.'
+      : ctx.mode
+        ? `The user is on the "${ctx.mode === 'expense' ? 'add expense' : 'create category'}" tab of the voice page. That is only a hint for a sentence that could be read either way; any command can be spoken from any tab, so follow what the sentence asks for.`
+        : 'The user spoke from somewhere in the app.';
   const history = ctx.history?.length
     ? ctx.history.map((t) => `User: "${t.said}"\nApp: "${t.reply}"`).join('\n')
     : '(none)';
@@ -135,7 +144,11 @@ export function buildVoicePrompt(transcript: string, ctx: VoiceIntentContext) {
     ? `"${ctx.lastExpense.title}" in ${ctx.lastExpense.category}, PKR ${ctx.lastExpense.amount}, dated ${ctx.lastExpense.date}`
     : '(none)';
 
-  return `You interpret voice commands for an expense tracker. You only read the sentence and fill in JSON; the app checks permissions and carries it out.
+  const recent = ctx.recentExpenses
+    ? `\nNewest expenses the user can see, newest first (date, category, title, amount, paid by):\n${ctx.recentExpenses.join('\n') || '(none)'}\n`
+    : '';
+
+  return `You are the assistant of an expense tracker. You read what the user said and fill in JSON; the app checks permissions and carries out the action you pick, and you never change data yourself.
 
 The sentence comes from speech recognition. It may be English, Urdu, Roman Urdu or a mix, informal, and names are often misheard or misspelled. Understand it by meaning, not by keywords. A spoken name refers to an existing category or user only when it is that same name, allowing for mishearing, spelling and translation; a different word that is merely related in meaning is a different thing, and for a category it may be a new one the user wants to create.
 
@@ -157,7 +170,7 @@ ${list(ctx.users)}
 Conversation so far, oldest first:
 ${history}
 Expense the conversation is about: ${last}
-
+${recent}
 Pick the one intent that matches what the user wants done:
 - add-expense: record money that was spent. Naming an existing category while recording spending is still add-expense, not create-category. When a person is named together with an amount being put into a category, that person paid the expense (paidById); it is not an access change.
 - update-expense: an explicit instruction to change an existing expense. A question or statement about an expense's current value is not a change; show it with open-category or navigate and q instead.
@@ -176,7 +189,7 @@ Pick the one intent that matches what the user wants done:
 - budget: set the monthly budget of an existing category (amount). Users may call the budget the category's amount or limit. When an amount is given to the category itself and the sentence names nothing bought, no spending and no payer, it is budget rather than add-expense, whatever tab the user is on.
 - delete-category / delete-user: remove a category or a user.
 - theme: switch theme. back: go back. logout: sign out. help: the user asks what can be said.
-- unknown: none of the above.
+- unknown: nothing has to be done in the app: the user is greeting, chatting or asking a question. Answer it yourself in reply. Anything you can work out from the lists above is such a question: counting, listing, comparing, adding up, finding the biggest or the latest.
 
 People correct themselves while speaking. When the sentence gives the same field more than once, the last value is the one they mean. A name the user gives as the expense's name is the title, not a user.
 
@@ -196,7 +209,8 @@ Fill the fields (use "${NONE}", "", null or [] for anything that does not apply)
 - updates: for update-expense, only the values the user asks to change: the new amount, the new title, the new date.
 - period: for total, "this-month" when the sentence asks about this month, else "all".
 - page, theme, grant, active: the value the intent needs.
-- clarification: when the sentence is ambiguous or misses something you cannot carry it out without, a short question in the user's language. Ask instead of guessing: never invent a category, amount, name or record. A missing amount or category for add-expense deserves a question, and so does a name that fits more than one listed user or category equally well. Empty string otherwise.`;
+- clarification: when the sentence is ambiguous or misses something you cannot carry it out without, a short question in the user's language. Ask instead of guessing: never invent a category, amount, name or record. A missing amount or category for add-expense deserves a question, and so does a name that fits more than one listed user or category equally well. Empty string otherwise.
+- reply: for unknown only, your answer to the user. Answer directly and completely, as a helpful assistant would: work the answer out from the categories, users, expenses and conversation above (count them, list them, add them up, compare them), and answer general questions from your own knowledge. Do not talk about intents, actions or what you are able to do instead of answering, and do not ask the user to confirm a question whose meaning is clear despite typos. Only when the answer needs data that is not shown above, say what is missing. Write in the same language and script as the sentence itself, whatever language the earlier conversation or the data is in: an English sentence gets an English answer, a Roman Urdu sentence a Roman Urdu answer. Use plain text without markdown, as short as the answer allows. Never say that something was added, changed or deleted, because with this intent nothing is. Empty string for every other intent.`;
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -231,6 +245,7 @@ export function validateVoiceIntent(raw: unknown, ctx: VoiceIntentContext): Voic
     grant: raw.grant !== false,
     active: raw.active !== false,
     clarification: text(raw.clarification, 300),
+    reply: text(raw.reply, 2000),
   };
 }
 

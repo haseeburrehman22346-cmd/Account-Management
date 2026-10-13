@@ -39,7 +39,7 @@ function hrefFor(user: User, action: VoiceNavigateAction) {
   }
 }
 
-/** Carries out what a command spoken on the Voice Entry page asks for: navigation, theme, edit forms and delete confirmations. */
+/** Carries out what a command from the Voice Entry page or the chat asks for: navigation, theme, edit forms and delete confirmations. */
 export function VoiceAssistant({ user, onDataChanged }: { user: User; onDataChanged: () => void }) {
   const router = useRouter();
   const { logout } = useAuth();
@@ -61,7 +61,7 @@ export function VoiceAssistant({ user, onDataChanged }: { user: User; onDataChan
 
   const apply = useCallback(
     async (result: VoiceCommandResult) => {
-      (result.ok ? toast.success : toast.error)(result.message);
+      if (!result.quiet) (result.ok ? toast.success : toast.error)(result.message);
       if (result.changed) onDataChanged();
 
       const { action } = result;

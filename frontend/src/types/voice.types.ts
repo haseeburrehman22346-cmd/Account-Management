@@ -74,6 +74,8 @@ export interface VoiceCommandResult {
   changed: boolean;
   /** Set for add-expense and create-category sentences, with the parse to review. */
   entry: (({ kind: "expense" } & VoiceExpenseResult) | ({ kind: "category" } & VoiceCategoryResult)) | null;
+  /** Set by the chat, which shows the message itself instead of a toast. */
+  quiet?: boolean;
 }
 
 export interface CategoryImageLine {

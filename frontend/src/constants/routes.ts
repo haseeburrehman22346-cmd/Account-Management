@@ -9,6 +9,7 @@ export const ROUTES = {
     expenses: "/admin/expenses",
     users: "/admin/users",
     voice: "/admin/voice",
+    chat: "/admin/chat",
     settings: "/admin/settings",
   },
   user: {
@@ -16,6 +17,7 @@ export const ROUTES = {
     category: (id: string) => `/my-categories/${id}`,
     profile: "/profile",
     voice: "/voice",
+    chat: "/chat",
   },
 } as const;
 

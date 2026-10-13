@@ -34,6 +34,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...init.headers,
     },
+  }).catch(() => {
+    throw new Error("Couldn't reach the server — check that the backend is running and try again");
   });
 
   // Expired, revoked or deactivated session: clearing it makes the app shell redirect to /login.

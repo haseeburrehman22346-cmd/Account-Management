@@ -45,7 +45,7 @@ const ERROR_MESSAGES: Record<string, string> = {
 
 /**
  * Browser speech-to-text; keeps listening until `stop()` is called, then calls `onFinal` with the recognised text.
- * With `singlePhrase` it stops by itself after the first pause, for one-shot commands.
+ * With `singlePhrase` it stops by itself after the first pause, for one-shot commands. `cancel()` stops and discards the text.
  */
 export function useSpeechRecognition(onFinal: (text: string) => void, { singlePhrase = false } = {}) {
   const supported = useSyncExternalStore(noopSubscribe, () => getRecognitionCtor() !== null, () => false);
@@ -147,6 +147,11 @@ export function useSpeechRecognition(onFinal: (text: string) => void, { singlePh
   }, [singlePhrase]);
 
   const stop = useCallback(() => stopRef.current?.(), []);
+  const cancel = useCallback(() => {
+    cancelRef.current?.();
+    setListening(false);
+    setInterim("");
+  }, []);
 
-  return { supported, listening, interim, error, start, stop };
+  return { supported, listening, interim, error, start, stop, cancel };
 }
