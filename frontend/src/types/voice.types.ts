@@ -5,7 +5,6 @@ import type { UserRef } from "./user.types";
 export interface VoiceParseResult {
   transcript: string;
   category: ExpenseCategoryRef | null;
-  alternatives: ExpenseCategoryRef[];
   amount: number | null;
   title: string;
   date: string;
@@ -52,11 +51,18 @@ export interface VoiceConfirmDeleteAction {
   description: string;
 }
 
+export type VoiceEditAction =
+  | { type: "edit-category"; category: Category }
+  | { type: "edit-expense"; expense: Expense }
+  | { type: "new-category" }
+  | { type: "new-expense"; categoryId: string; categories: Category[] };
+
 export type VoiceAction =
   | { type: "none" | "back" | "logout" | "help" }
   | { type: "theme"; theme: "light" | "dark" | "system" }
   | VoiceNavigateAction
-  | VoiceConfirmDeleteAction;
+  | VoiceConfirmDeleteAction
+  | VoiceEditAction;
 
 export interface VoiceCommandResult {
   transcript: string;

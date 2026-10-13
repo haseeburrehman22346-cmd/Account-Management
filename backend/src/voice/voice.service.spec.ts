@@ -52,6 +52,7 @@ const intent = (over: Partial<VoiceIntent>): VoiceIntent => ({
   amount: null,
   title: '',
   name: '',
+  icon: 'folder',
   date: null,
   q: '',
   target: 'none',
@@ -188,9 +189,9 @@ describe('VoiceService.command with the AI reading', () => {
     expect(expenses.update).not.toHaveBeenCalled();
   });
 
-  it('treats an amount given to the category itself as its budget', async () => {
+  it('follows the AI on whether an amount is a budget or an expense, whatever tab is open', async () => {
     const { service, expenses, categories, ai } = setup();
-    ai.mockResolvedValueOnce(intent({ intent: 'add-expense', categoryId: 'laptop', amount: 200000 }));
+    ai.mockResolvedValueOnce(intent({ intent: 'budget', categoryId: 'laptop', amount: 200000 }));
     const result = await service.command('I want to add 2 lakh amount in Laptop category', admin, 'expense');
 
     expect(result.message).toBe('Laptop budget set to PKR 200,000');
@@ -198,8 +199,101 @@ describe('VoiceService.command with the AI reading', () => {
     expect(expenses.create).not.toHaveBeenCalled();
 
     ai.mockResolvedValueOnce(intent({ intent: 'add-expense', categoryId: 'laptop', amount: 1000 }));
-    await service.command('add one expense in Laptop category amount 1000', admin, 'expense');
+    await service.command('I want to add 1000 amount in Laptop category', admin, 'expense');
     expect(expenses.create).toHaveBeenCalledTimes(1);
+    expect(categories.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the AI question when a new expense misses something', async () => {
+    const { service, expenses, ai } = setup();
+    ai.mockResolvedValue(intent({ intent: 'add-expense', categoryId: 'laptop', clarification: 'Kitni amount?' }));
+
+    const result = await service.command('laptop mein dell battery add karo', admin);
+
+    expect(result).toMatchObject({ ok: false, message: 'Kitni amount?' });
+    expect(result.entry).toMatchObject({ kind: 'expense', expense: null });
+    expect(expenses.create).not.toHaveBeenCalled();
+  });
+
+  it('creates a category with the name, budget, icon and users the AI read', async () => {
+    const { service, categories, ai } = setup();
+    categories.create.mockResolvedValue({ id: 'travel', name: 'Travel' });
+    ai.mockResolvedValue(
+      intent({ intent: 'create-category', name: 'Travel', amount: 5000, icon: 'plane', userIds: ['haseeb'] }),
+    );
+
+    const result = await service.command('travel naam ki category banao budget 5000 aur Haseeb ko de do', admin);
+
+    expect(categories.create).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Travel', budgetLimit: 5000, icon: 'plane', assignedUserIds: ['haseeb'] }),
+      admin,
+    );
+    expect(result).toMatchObject({ ok: true, changed: true });
+  });
+
+  it('renames an existing category instead of creating one, even on the create-category tab', async () => {
+    const { service, categories, ai } = setup();
+    ai.mockResolvedValue(intent({ intent: 'rename-category', categoryId: 'wifi', name: 'Internet' }));
+
+    const result = await service.command('wifi category ka naam internet kar do', admin, 'category');
+
+    expect(categories.update).toHaveBeenCalledWith('wifi', expect.objectContaining({ name: 'Internet' }), admin);
+    expect(categories.create).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ ok: true, changed: true, message: 'Wifi renamed to Internet', entry: null });
+  });
+
+  it('opens the edit form when the user wants to edit a category without saying what to change', async () => {
+    const { service, categories, ai } = setup();
+    ai.mockResolvedValue(intent({ intent: 'edit-category', categoryId: 'wifi' }));
+
+    const result = await service.command('I want to edit wifi category', admin, 'category');
+
+    expect(result).toMatchObject({ ok: true, changed: false, entry: null });
+    expect(result.action).toMatchObject({ type: 'edit-category', category: { id: 'wifi' } });
+    expect(categories.create).not.toHaveBeenCalled();
+    expect(categories.update).not.toHaveBeenCalled();
+  });
+
+  it('opens the empty category form instead of the categories page', async () => {
+    const { service, categories, ai } = setup();
+    ai.mockResolvedValue(intent({ intent: 'new-category-form' }));
+
+    const result = await service.command('give me add category form', admin, 'expense');
+
+    expect(result).toMatchObject({ ok: true, changed: false, entry: null, action: { type: 'new-category' } });
+    expect(categories.create).not.toHaveBeenCalled();
+    expect((await service.command('give me add category form', member)).ok).toBe(false);
+  });
+
+  it('opens the empty expense form on the category the sentence names', async () => {
+    const { service, expenses, ai } = setup();
+    ai.mockResolvedValue(intent({ intent: 'new-expense-form', categoryId: 'wifi' }));
+
+    const result = await service.command('open the expense form for wifi', member);
+
+    expect(result.action).toMatchObject({ type: 'new-expense', categoryId: 'wifi' });
+    expect(expenses.create).not.toHaveBeenCalled();
+  });
+
+  it('creates nothing from a sentence the AI did not understand', async () => {
+    const { service, expenses, categories, ai } = setup();
+    ai.mockResolvedValue(intent({ intent: 'unknown' }));
+
+    const result = await service.command('hello hello testing', admin, 'category');
+
+    expect(result).toMatchObject({ ok: false, entry: null });
+    expect(categories.create).not.toHaveBeenCalled();
+    expect(expenses.create).not.toHaveBeenCalled();
+  });
+
+  it('does not create a category that already exists', async () => {
+    const { service, categories, ai } = setup();
+    ai.mockResolvedValue(intent({ intent: 'create-category', name: 'laptop' }));
+
+    const result = await service.command('laptop category banao', admin);
+
+    expect(result).toMatchObject({ ok: false, message: 'A category called Laptop already exists' });
+    expect(categories.create).not.toHaveBeenCalled();
   });
 
   it('keeps admin-only commands for admins', async () => {
@@ -212,13 +306,16 @@ describe('VoiceService.command with the AI reading', () => {
     expect(categories.update).not.toHaveBeenCalled();
   });
 
-  it('falls back to the keyword parser when the AI is unavailable', async () => {
-    const { service, ai } = setup();
+  it('does nothing when the AI is unavailable', async () => {
+    const { service, expenses, categories, ai } = setup();
     ai.mockResolvedValue(null);
 
-    const result = await service.command('open laptop category', admin);
+    const result = await service.command('laptop mein dell battery 1000', admin, 'expense');
 
-    expect(result.action).toMatchObject({ type: 'navigate', page: 'category', categoryId: 'laptop' });
+    expect(result).toMatchObject({ ok: false, changed: false, action: { type: 'none' }, entry: null });
+    expect(result.message).toContain('OpenAI');
+    expect(expenses.create).not.toHaveBeenCalled();
+    expect(categories.update).not.toHaveBeenCalled();
   });
 });
 

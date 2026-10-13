@@ -8,6 +8,11 @@ export const VOICE_INTENTS = [
   'update-expense',
   'delete-expense',
   'create-category',
+  'rename-category',
+  'edit-category',
+  'edit-expense',
+  'new-category-form',
+  'new-expense-form',
   'navigate',
   'open-category',
   'total',
@@ -29,6 +34,12 @@ const THEMES = ['light', 'dark', 'system'] as const;
 const TARGETS = ['none', 'previous', 'search'] as const;
 const PERIODS = ['all', 'this-month'] as const;
 
+/** Icon keys shared with the frontend's icon set. */
+export const CATEGORY_ICONS = [
+  'utensils', 'shopping-cart', 'car', 'plane', 'briefcase', 'zap', 'wifi', 'house', 'film', 'gamepad', 'heart-pulse',
+  'graduation-cap', 'shirt', 'gift', 'ellipsis', 'folder',
+] as const;
+
 export interface VoiceIntent {
   intent: (typeof VOICE_INTENTS)[number];
   categoryId: string | null;
@@ -38,6 +49,7 @@ export interface VoiceIntent {
   amount: number | null;
   title: string;
   name: string;
+  icon: (typeof CATEGORY_ICONS)[number];
   date: string | null;
   q: string;
   /** Which expense an update or delete is about: the one from the previous turn, or one found by `q`. */
@@ -78,7 +90,7 @@ const SCHEMA = {
   type: 'object',
   additionalProperties: false,
   required: [
-    'intent', 'categoryId', 'userIds', 'paidById', 'amount', 'title', 'name', 'date', 'q', 'target', 'updates',
+    'intent', 'categoryId', 'userIds', 'paidById', 'amount', 'title', 'name', 'icon', 'date', 'q', 'target', 'updates',
     'period', 'page', 'theme', 'grant', 'active', 'clarification',
   ],
   properties: {
@@ -89,6 +101,7 @@ const SCHEMA = {
     amount: { type: ['number', 'null'] },
     title: { type: 'string' },
     name: { type: 'string' },
+    icon: { type: 'string', enum: CATEGORY_ICONS },
     date: { type: ['string', 'null'] },
     q: { type: 'string' },
     target: { type: 'string', enum: TARGETS },
@@ -113,7 +126,7 @@ export function buildVoicePrompt(transcript: string, ctx: VoiceIntentContext) {
   const situation = ctx.force
     ? `The sentence is known to be a "${ctx.force}" request; use that intent.`
     : ctx.mode
-      ? `The user is on the "${ctx.mode === 'expense' ? 'add expense' : 'create category'}" tab of the voice page, so prefer that reading when the sentence is ambiguous, but follow the sentence when it clearly asks for something else.`
+      ? `The user is on the "${ctx.mode === 'expense' ? 'add expense' : 'create category'}" tab of the voice page. That is only a hint for a sentence that could be read either way; any command can be spoken from any tab, so follow what the sentence asks for.`
       : 'The user spoke from somewhere in the app.';
   const history = ctx.history?.length
     ? ctx.history.map((t) => `User: "${t.said}"\nApp: "${t.reply}"`).join('\n')
@@ -124,10 +137,10 @@ export function buildVoicePrompt(transcript: string, ctx: VoiceIntentContext) {
 
   return `You interpret voice commands for an expense tracker. You only read the sentence and fill in JSON; the app checks permissions and carries it out.
 
-The sentence comes from speech recognition. It may be English, Urdu, Roman Urdu or a mix, informal, and names are often misspelled ("Wi-Fi" for "Wifi", "Hasib" for "Haseeb"). Understand it by meaning, not by keywords, and match names to the closest existing category or user by sound and meaning.
+The sentence comes from speech recognition. It may be English, Urdu, Roman Urdu or a mix, informal, and names are often misheard or misspelled. Understand it by meaning, not by keywords. A spoken name refers to an existing category or user only when it is that same name, allowing for mishearing, spelling and translation; a different word that is merely related in meaning is a different thing, and for a category it may be a new one the user wants to create.
 
 What the app stores:
-- Categories (e.g. Laptop, Wifi), each with a monthly budget and the users allowed to use it.
+- Categories, each with a monthly budget and the users allowed to use it.
 - Expenses inside a category: a title (what was bought), an amount in PKR, a date, and who paid.
 - Users, who can be active or inactive and be given access to categories.
 
@@ -145,39 +158,45 @@ Conversation so far, oldest first:
 ${history}
 Expense the conversation is about: ${last}
 
-Pick one intent:
-- add-expense: record money spent, e.g. "wifi category mein 1000 ka expense add kar do", "food 500 lunch". Mentioning an existing category while adding an expense is add-expense, never create-category. Adding anyone or anything to a category together with an amount is always add-expense: "Laptop category mein Haseeb naam ka user add karo, amount 1000" and "Haseeb ko laptop mein daal do, uski amount 1000" are an expense of 1000 in Laptop paid by Haseeb (paidById), not access.
-- update-expense: an explicit instruction to change an existing expense, e.g. "Dell battery ka amount 1500 kar do", "ab iski amount 2000 kar do". A question or statement about a value ("Dell battery ki amount 1000 hai na?") is not a change: use open-category or navigate with q to show it.
+Pick the one intent that matches what the user wants done:
+- add-expense: record money that was spent. Naming an existing category while recording spending is still add-expense, not create-category. When a person is named together with an amount being put into a category, that person paid the expense (paidById); it is not an access change.
+- update-expense: an explicit instruction to change an existing expense. A question or statement about an expense's current value is not a change; show it with open-category or navigate and q instead.
 - delete-expense: remove an expense.
-- create-category: make a new category, e.g. "travel naam ki category banao budget 5000".
-- navigate: go to a page (page), optionally searching it (q).
-- open-category: open, list or show one existing category's expenses, or find something inside it (q), e.g. "Show me all expenses in Laptop", "Laptop mein Dell battery dhoondo".
-- total: only when asked how much was spent ("kitna", "how much", "total"), overall or in one category, e.g. "laptop mein is mahine kitna kharcha hua".
-- access: give or take away a user's access to a category (grant true/false), with no amount, e.g. "Haseeb ko laptop category mein daal do".
+- create-category: make a category that does not exist yet. Only when the user asks for a new one; a request to change something about an existing category is never create-category.
+- rename-category: change the name of an existing category (categoryId) to a new name (name).
+- edit-category: the user wants to edit or change an existing category (categoryId) without saying what the new value is; the app opens its edit form. When the sentence does give the new value, use the intent for that change instead.
+- edit-expense: the same for an existing expense (target and q): the user wants to edit it but gives no new value.
+- new-category-form: the user asks for the empty form in which a new category is typed in, and gives no name or other details for it. When the sentence does give the details, use create-category.
+- new-expense-form: the same for a new expense: the user asks for the empty form and gives no amount or item. categoryId when the sentence names the category it is for.
+- navigate: go to a page (page) to look at what is on it, optionally searching it (q). A request for a form to add or edit something is not navigation, even when it mentions the page's name.
+- open-category: open, list or show one existing category's expenses, or find something inside it (q).
+- total: the user asks how much was spent, overall or in one category.
+- access: give or take away a user's access to a category (grant true/false), with no amount involved.
 - category-status / user-status: activate or deactivate a category or a user (active true/false).
-- budget: set the monthly budget of an existing category (amount). Users call the budget the category's "amount" or "limit". When the amount is given to the category itself and the sentence names nothing bought, no "expense"/"kharcha" and no payer, it is budget, not add-expense, whatever tab the user is on: "I want to add 2 lakh amount in Haseeb category", "Laptop category ki amount 50000 kar do", "wifi category mein 10 hazar amount add karo".
+- budget: set the monthly budget of an existing category (amount). Users may call the budget the category's amount or limit. When an amount is given to the category itself and the sentence names nothing bought, no spending and no payer, it is budget rather than add-expense, whatever tab the user is on.
 - delete-category / delete-user: remove a category or a user.
-- theme: switch theme. back: go back. logout: sign out. help: asks what can be said.
+- theme: switch theme. back: go back. logout: sign out. help: the user asks what can be said.
 - unknown: none of the above.
 
-People correct themselves while speaking. When the sentence gives the same field more than once ("expense name is a seat ... expense name is Haseeb amount 1000"), the last value is the one they mean; the earlier one was usually misheard. A name given as "expense name is X" is the title, not a user.
+People correct themselves while speaking. When the sentence gives the same field more than once, the last value is the one they mean. A name the user gives as the expense's name is the title, not a user.
 
-When the app's last reply was a question and the sentence answers it, read the user's previous sentence and this answer together as one request. E.g. after User: "expense add karo 500" / App: "Kis category mein add karoon?", the sentence "Laptop" means add-expense of 500 in Laptop.
+When the app's last reply was a question and the sentence answers it, read the user's previous sentence and this answer together as one request.
 
 Fill the fields (use "${NONE}", "", null or [] for anything that does not apply):
-- categoryId: id of the existing category the sentence refers to, or "${NONE}". For update-expense and delete-expense, only a category the sentence names.
-- userIds: ids of listed users the sentence names, including users a new category is given to ("... aur Haseeb ko de do").
+- categoryId: id of the existing category the sentence refers to, or "${NONE}". For update-expense, edit-expense, delete-expense and new-expense-form, only a category the sentence names.
+- userIds: ids of the listed users the sentence names, including users a new category is given to.
 - paidById: for add-expense, id of the listed user who paid, or "${NONE}".
-- amount: the amount for add-expense or the budget for create-category and budget, as a number. Convert spoken numbers: "ek hazaar" = 1000, "5 hazar" = 5000, "dhai hazar" = 2500, "2 lakh" = 200000, "fifteen hundred" = 1500. A number that is part of a name ("iPhone 15") is not an amount.
-- title: for add-expense, the thing bought or paid for in Title Case under 60 characters, e.g. "Dell Battery", leaving out the category, amount, date, payer and words like "add", "expense", "naam", "kar do".
-- name: for create-category, the new category's name in Title Case under 40 characters.
-- date: for add-expense, the day it was spent as YYYY-MM-DD when the sentence says one ("kal" = yesterday, "parson" = two days ago), else null.
-- q: for navigate, open-category, update-expense and delete-expense, the words that identify the expense or search, e.g. "Dell Battery". Never the page's or category's own name.
-- target: for update-expense and delete-expense, "previous" when the sentence points back at the expense the conversation is about ("iska", "his", "it", "wohi wala"), "search" when it names the expense in q.
-- updates: for update-expense, only the values the user asks to change: the new amount, the new title, the new date. A value the sentence only describes is not a change.
+- amount: the amount for add-expense, or the budget for create-category and budget, as a plain number. Convert numbers spoken in words in any language, including South Asian units such as hazar, lakh and crore. A number that is part of a product name is not an amount.
+- title: for add-expense, only the thing bought or paid for, in Title Case under 60 characters, without the category, amount, date, payer or instruction words.
+- name: for create-category, the new category's name; for rename-category, the name the existing category should have from now on. Title Case, under 40 characters.
+- icon: for create-category, the icon that best fits the new category; "folder" when none fits.
+- date: for add-expense, the day it was spent as YYYY-MM-DD when the sentence says or implies one, else null.
+- q: for navigate, open-category, update-expense, edit-expense and delete-expense, the words that identify the expense or search. Never the page's or category's own name.
+- target: for update-expense, edit-expense and delete-expense, "previous" when the sentence points back at the expense the conversation is about, "search" when it names the expense in q.
+- updates: for update-expense, only the values the user asks to change: the new amount, the new title, the new date.
 - period: for total, "this-month" when the sentence asks about this month, else "all".
 - page, theme, grant, active: the value the intent needs.
-- clarification: when the sentence is ambiguous or misses something you cannot carry out without, a short question in the user's language, e.g. "Kis category mein add karoon?". Ask instead of guessing: never invent a category, amount, name or record. A missing amount or category for add-expense also deserves a question, and so does a name that fits more than one listed user or category equally well ("Ali" when there are "Ali Khan" and "Ali Raza"). Empty string otherwise.`;
+- clarification: when the sentence is ambiguous or misses something you cannot carry it out without, a short question in the user's language. Ask instead of guessing: never invent a category, amount, name or record. A missing amount or category for add-expense deserves a question, and so does a name that fits more than one listed user or category equally well. Empty string otherwise.`;
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -201,6 +220,7 @@ export function validateVoiceIntent(raw: unknown, ctx: VoiceIntentContext): Voic
     amount: positive(raw.amount),
     title: text(raw.title, 200),
     name: text(raw.name, 100),
+    icon: oneOf(CATEGORY_ICONS, raw.icon, 'folder'),
     date: pastDate(raw.date),
     q: text(raw.q, 100),
     target: oneOf(TARGETS, raw.target, 'none'),
@@ -214,7 +234,7 @@ export function validateVoiceIntent(raw: unknown, ctx: VoiceIntentContext): Voic
   };
 }
 
-/** Asks OpenAI what a spoken sentence means; null when it can't, so the caller falls back to its keyword parsers. */
+/** Asks OpenAI what a spoken sentence means; null when it can't be reached or gives no usable answer. */
 export async function readVoiceIntent(transcript: string, ctx: VoiceIntentContext): Promise<VoiceIntent | null> {
   if (!process.env.OPENAI_API_KEY) return null;
   client ??= new OpenAI();

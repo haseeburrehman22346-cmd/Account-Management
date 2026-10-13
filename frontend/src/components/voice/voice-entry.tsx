@@ -86,7 +86,7 @@ export function VoiceEntry() {
     async (transcript: string) => {
       setBusy(true);
       try {
-        // Commands ("show all categories") are carried out by the top-bar assistant; only entries are listed here.
+        // Commands ("show all categories") are carried out by the voice assistant; only entries are listed here.
         const result = receiptUrl ? null : await voiceService.command(transcript, isAdmin ? mode : "expense");
         if (result && !result.entry) {
           window.dispatchEvent(new CustomEvent(VOICE_RESULT_EVENT, { detail: result }));
@@ -149,7 +149,6 @@ export function VoiceEntry() {
         parsed: {
           transcript: expense.title,
           category: expense.category,
-          alternatives: [],
           amount: expense.amount,
           title: expense.title,
           date: expense.date,

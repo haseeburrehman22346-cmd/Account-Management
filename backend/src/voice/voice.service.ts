@@ -1,26 +1,31 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import type { AuthUser } from '../auth/auth.types.js';
 import { CategoriesService } from '../categories/categories.service.js';
 import { ExpensesService } from '../expenses/expenses.service.js';
 import { UsersService } from '../users/users.service.js';
 import { deleteReceiptFiles } from '../uploads/receipt-files.js';
 import type { CategoryInput } from '../categories/categories.dto.js';
-import { parseVoiceCategory, pickCategoryIcon } from './voice-category-parser.js';
-import { parseVoiceCommand, type VoiceCommand, type VoicePage, type VoiceTheme } from './voice-command-parser.js';
-import { normalizeSpeech, parseVoiceExpense } from './voice-parser.js';
 import { readCategoryList, readReceipt } from './receipt-reader.js';
 import { readVoiceIntent, type VoiceIntent } from './voice-ai.js';
+
+type VoicePage = VoiceIntent['page'];
+type VoiceTheme = VoiceIntent['theme'];
 
 /** Same order as the frontend palette, so new categories get distinguishable colors. */
 const PALETTE = ['blue', 'orange', 'aqua', 'yellow', 'magenta', 'green', 'violet', 'red', 'slate'];
 
 type CategoryDto = Awaited<ReturnType<CategoriesService['list']>>[number];
+type ExpenseDto = Awaited<ReturnType<ExpensesService['findVisible']>>;
 
 /** What the frontend should do after a voice command; deletes are confirmed there before anything is removed. */
 export type VoiceAction =
   | { type: 'none' }
   | { type: 'navigate'; page: VoicePage | 'category'; categoryId?: string; q?: string }
   | { type: 'confirm-delete'; target: 'category' | 'expense' | 'user'; id: string; title: string; description: string }
+  | { type: 'edit-category'; category: CategoryDto }
+  | { type: 'edit-expense'; expense: ExpenseDto }
+  | { type: 'new-category' }
+  | { type: 'new-expense'; categoryId: string; categories: CategoryDto[] }
   | { type: 'theme'; theme: VoiceTheme }
   | { type: 'back' }
   | { type: 'logout' }
@@ -49,6 +54,9 @@ const ADMIN_COMMANDS = new Set<string>([
   'delete-category',
   'delete-user',
   'create-category',
+  'rename-category',
+  'edit-category',
+  'new-category-form',
 ]);
 
 const PAGE_LABELS: Record<VoicePage, string> = {
@@ -67,12 +75,24 @@ const todayIso = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
-/** Commands only the AI reading can produce, on top of what the keyword parser knows. */
 type Command =
-  | Exclude<VoiceCommand, { type: 'delete-expense' }>
+  | { type: 'navigate'; page: VoicePage; q: string }
+  | { type: 'open-category'; categoryId: string; q: string }
+  | { type: 'access'; grant: boolean; categoryId: string | null; userIds: string[] }
+  | { type: 'category-status'; categoryId: string; active: boolean }
+  | { type: 'user-status'; userId: string; active: boolean }
+  | { type: 'budget'; categoryId: string; budget: number }
+  | { type: 'rename-category'; categoryId: string; name: string }
+  | { type: 'edit-category'; categoryId: string }
+  | { type: 'edit-expense'; categoryId: string | null; q: string; previous: boolean }
+  | { type: 'delete-category'; categoryId: string }
+  | { type: 'delete-user'; userId: string }
   | { type: 'update-expense'; categoryId: string | null; q: string; previous: boolean; updates: VoiceIntent['updates'] }
-  | { type: 'delete-expense'; categoryId: string | null; q: string; previous?: boolean }
-  | { type: 'total'; categoryId: string | null; period: VoiceIntent['period'] };
+  | { type: 'delete-expense'; categoryId: string | null; q: string; previous: boolean }
+  | { type: 'total'; categoryId: string | null; period: VoiceIntent['period'] }
+  | { type: 'theme'; theme: VoiceTheme }
+  | { type: 'new-expense-form'; categoryId: string | null }
+  | { type: 'create-category' | 'add-expense' | 'new-category-form' | 'back' | 'logout' | 'help' | 'unknown' };
 
 interface RememberedExpense {
   id: string;
@@ -88,7 +108,7 @@ interface Conversation {
   at: number;
 }
 
-const EXPENSE_WORDS = /\b(expenses?|kharch\w*|spent|spend|paid|pay|bought|buy|bill)\b/i;
+const AI_UNAVAILABLE = "Voice needs OpenAI and it couldn't be reached — check OPENAI_API_KEY in the backend .env and try again";
 const CONVERSATION_TTL_MS = 10 * 60 * 1000;
 const CONVERSATION_TURNS = 4;
 
@@ -100,7 +120,9 @@ const remember = (e: { id: string; title: string; amount: number; date: string; 
   date: e.date,
 });
 
-/** Turns the AI's reading into a command; null when it lacks what the command needs, so the keyword parser decides. */
+const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** Turns the AI's reading into a command; null when it lacks what the command needs. */
 export function toCommand(ai: VoiceIntent): Command | null {
   const { categoryId, userIds, q } = ai;
   switch (ai.intent) {
@@ -121,6 +143,12 @@ export function toCommand(ai: VoiceIntent): Command | null {
       return userIds.length === 1 ? { type: 'user-status', userId: userIds[0], active: ai.active } : null;
     case 'budget':
       return categoryId && ai.amount !== null ? { type: 'budget', categoryId, budget: ai.amount } : null;
+    case 'rename-category':
+      return categoryId && ai.name ? { type: 'rename-category', categoryId, name: ai.name } : null;
+    case 'edit-category':
+      return categoryId ? { type: 'edit-category', categoryId } : null;
+    case 'edit-expense':
+      return { type: 'edit-expense', categoryId, q, previous: ai.target === 'previous' || !q };
     case 'delete-category':
       return categoryId ? { type: 'delete-category', categoryId } : null;
     case 'delete-user':
@@ -129,6 +157,8 @@ export function toCommand(ai: VoiceIntent): Command | null {
       return { type: 'delete-expense', categoryId, q, previous: ai.target === 'previous' || !q };
     case 'theme':
       return { type: 'theme', theme: ai.theme };
+    case 'new-expense-form':
+      return { type: 'new-expense-form', categoryId };
     default:
       return { type: ai.intent };
   }
@@ -146,40 +176,30 @@ export class VoiceService {
   ) {}
 
   /** Matches only against categories this user may add expenses to. */
-  async parse(transcript: string, user: AuthUser, ai?: VoiceIntent | null) {
+  async parse(transcript: string, user: AuthUser, ai?: VoiceIntent) {
     const categories = (await this.categories.list(user)).filter((c) => c.canAddExpense);
-    const parsed = parseVoiceExpense(transcript, categories);
-    const ref = (id: string | null) => {
-      const c = categories.find((x) => x.id === id);
-      return c ? { id: c.id, name: c.name, icon: c.icon, color: c.color } : null;
-    };
+    const today = todayIso();
+    ai ??= (await readVoiceIntent(transcript, { categories, users: [], isAdmin: false, today, force: 'add-expense' })) ?? undefined;
+    if (!ai) throw new ServiceUnavailableException(AI_UNAVAILABLE);
 
-    if (ai === undefined) {
-      ai = await readVoiceIntent(transcript, { categories, users: [], isAdmin: false, today: todayIso(), force: 'add-expense' });
-    }
-    // The keyword parser only decides when the AI is unavailable.
-    const category = ref(ai ? ai.categoryId : parsed.categoryId);
-    const amount = ai ? ai.amount : parsed.amount;
+    const found = categories.find((c) => c.id === ai.categoryId);
+    const category = found ? { id: found.id, name: found.name, icon: found.icon, color: found.color } : null;
     const missing: ('category' | 'amount')[] = [];
     if (!category) missing.push('category');
-    if (amount === null) missing.push('amount');
+    if (ai.amount === null) missing.push('amount');
 
     return {
-      transcript: parsed.transcript,
+      transcript: transcript.trim(),
       category,
-      alternatives: [parsed.categoryId, ...parsed.alternativeCategoryIds]
-        .filter((id) => id !== category?.id)
-        .map(ref)
-        .filter((c) => c !== null),
-      amount,
-      title: ai ? ai.title || category?.name || parsed.title : parsed.title,
-      date: ai?.date ?? parsed.date,
+      amount: ai.amount,
+      title: ai.title || category?.name || '',
+      date: ai.date ?? today,
       missing,
     };
   }
 
   /** Creates the expense when the sentence names a category and an amount; otherwise returns the parse for review. */
-  async createExpense(transcript: string, user: AuthUser, receiptUrl: string | null = null, ai?: VoiceIntent | null) {
+  async createExpense(transcript: string, user: AuthUser, receiptUrl: string | null = null, ai?: VoiceIntent) {
     const parsed = await this.parse(transcript, user, ai);
     if (!parsed.category || parsed.amount === null) return { parsed, expense: null };
 
@@ -216,7 +236,7 @@ export class VoiceService {
         read.writtenCategory && !category && user.role === 'admin'
           ? {
               name: read.writtenCategory,
-              icon: pickCategoryIcon(read.writtenCategory),
+              icon: read.icon,
               color: PALETTE.find((c) => !used.has(c)) ?? PALETTE[all.length % PALETTE.length],
             }
           : null,
@@ -234,9 +254,9 @@ export class VoiceService {
         categories: lines.map((line, i) => ({
           name: line.name,
           budget: line.budget,
-          icon: pickCategoryIcon(line.name),
+          icon: line.icon,
           color: free[i] ?? PALETTE[(existing.length + i) % PALETTE.length],
-          duplicate: existing.find((c) => c.name.toLowerCase() === line.name.toLowerCase()) ?? null,
+          duplicate: existing.find((c) => sameName(c.name, line.name)) ?? null,
         })),
       };
     } finally {
@@ -245,54 +265,47 @@ export class VoiceService {
   }
 
   /** Admin only: creates a category from e.g. "category food budget 20000 for Ali". */
-  async createCategory(transcript: string, admin: AuthUser, ai?: VoiceIntent | null) {
+  async createCategory(transcript: string, admin: AuthUser, ai?: VoiceIntent) {
     const [users, existing] = await Promise.all([this.users.list(), this.categories.list(admin)]);
     const activeUsers = users.filter((u) => u.active);
-    if (ai === undefined) {
-      ai = await readVoiceIntent(transcript, {
+    ai ??=
+      (await readVoiceIntent(transcript, {
         categories: existing,
         users: activeUsers,
         isAdmin: true,
         today: todayIso(),
         force: 'create-category',
-      });
-    }
-    const parsed = ai
-      ? {
-          transcript: transcript.trim(),
-          name: ai.name,
-          budget: ai.amount,
-          userIds: ai.userIds.filter((id) => activeUsers.some((u) => u.id === id)),
-          icon: pickCategoryIcon(ai.name),
-          duplicateOf:
-            (ai.name && existing.find((c) => normalizeSpeech(c.name) === normalizeSpeech(ai.name))?.id) || null,
-          missing: ai.name ? [] : ['name' as const],
-        }
-      : parseVoiceCategory(transcript, activeUsers, existing);
+      })) ?? undefined;
+    if (!ai) throw new ServiceUnavailableException(AI_UNAVAILABLE);
+
+    const { name, icon, amount: budget } = ai;
+    const assigned = activeUsers.filter((u) => ai.userIds.includes(u.id));
+    const duplicate = (name && existing.find((c) => sameName(c.name, name))) || null;
+    const missing: 'name'[] = name ? [] : ['name'];
     const used = new Set(existing.map((c) => c.color));
     const color = PALETTE.find((c) => !used.has(c)) ?? PALETTE[existing.length % PALETTE.length];
 
     const result = {
-      transcript: parsed.transcript,
-      name: parsed.name,
-      budget: parsed.budget,
-      icon: parsed.icon,
+      transcript: transcript.trim(),
+      name,
+      budget,
+      icon,
       color,
-      users: users.filter((u) => parsed.userIds.includes(u.id)).map((u) => ({ id: u.id, name: u.name })),
-      duplicate: existing.find((c) => c.id === parsed.duplicateOf) ?? null,
-      missing: parsed.missing,
+      users: assigned.map((u) => ({ id: u.id, name: u.name })),
+      duplicate,
+      missing,
     };
-    if (parsed.missing.length || parsed.duplicateOf) return { parsed: result, category: null };
+    if (missing.length || duplicate) return { parsed: result, category: null };
 
     const category = await this.categories.create(
       {
-        name: parsed.name,
+        name,
         description: '',
-        icon: parsed.icon,
+        icon,
         color,
-        budgetLimit: parsed.budget,
+        budgetLimit: budget,
         status: 'active',
-        assignedUserIds: parsed.userIds,
+        assignedUserIds: assigned.map((u) => u.id),
       },
       admin,
     );
@@ -329,22 +342,10 @@ export class VoiceService {
       history: conversation.turns,
       lastExpense: conversation.lastExpense,
     });
-    // "Add 5000 amount in Hostel category" names nothing bought: the amount is the category's budget, not an expense.
-    if (
-      ai?.intent === 'add-expense' && isAdmin && ai.categoryId && ai.amount !== null && !ai.title && !ai.paidById &&
-      /\bamount\b/i.test(transcript) && /\bcategor/i.test(transcript) && !EXPENSE_WORDS.test(transcript)
-    ) {
-      ai.intent = 'budget';
+    if (!ai) {
+      return { transcript: transcript.trim(), ok: false, message: AI_UNAVAILABLE, action: { type: 'none' }, changed: false, entry: null };
     }
-    let command: Command = (ai && toCommand(ai)) ?? parseVoiceCommand(transcript, categories, users);
-    // On the Voice Entry page a sentence that isn't a command is an entry for the open tab.
-    if (mode === 'category' && isAdmin && (command.type === 'unknown' || (!ai && command.type === 'add-expense'))) {
-      command = { type: 'create-category' };
-    } else if (mode === 'expense' && command.type === 'unknown') {
-      command = { type: 'add-expense' };
-    }
-    // Only reuse the AI's fields for the entry it was read as.
-    const entryAi = ai && ai.intent === command.type ? ai : undefined;
+    const command: Command = toCommand(ai) ?? { type: 'unknown' };
 
     const done = (message: string, action: VoiceAction = { type: 'none' }, changed = false): VoiceCommandResult => ({
       transcript: transcript.trim(),
@@ -359,7 +360,7 @@ export class VoiceService {
 
     if (!isAdmin && ADMIN_COMMANDS.has(command.type)) return fail('Only admins can do that');
     // The AI asks rather than guesses; new entries keep their review card and use its question as the message.
-    const question = ai?.clarification ?? '';
+    const question = ai.clarification;
     if (question && command.type !== 'add-expense' && command.type !== 'create-category') return fail(question);
 
     /** The expense a sentence points at: the one from the previous turn, or the single one matching its words. */
@@ -445,6 +446,38 @@ export class VoiceService {
         const c = category(command.categoryId);
         await this.updateCategory(c, { budgetLimit: command.budget }, user);
         return done(`${c.name} budget set to ${money(command.budget)}`, undefined, true);
+      }
+
+      case 'rename-category': {
+        const c = category(command.categoryId);
+        const taken = categories.find((x) => x.id !== c.id && sameName(x.name, command.name));
+        if (taken) return fail(`A category called ${taken.name} already exists`);
+        if (c.name === command.name) return done(`The category is already called ${c.name}`);
+        await this.updateCategory(c, { name: command.name }, user);
+        return done(`${c.name} renamed to ${command.name}`, undefined, true);
+      }
+
+      case 'edit-category': {
+        const c = category(command.categoryId);
+        return done(`Editing ${c.name}`, { type: 'edit-category', category: c });
+      }
+
+      case 'edit-expense': {
+        const hit = await findExpense(command);
+        if (isReply(hit)) return hit;
+        if (!hit.canEdit) return fail('You can only change expenses you added');
+        conversation.lastExpense = remember(hit);
+        return done(`Editing ${hit.title}`, { type: 'edit-expense', expense: hit });
+      }
+
+      case 'new-category-form':
+        return done('Opening the add category form', { type: 'new-category' });
+
+      case 'new-expense-form': {
+        const usable = categories.filter((c) => c.canAddExpense);
+        if (!usable.length) return fail('There is no category you can add expenses to yet');
+        const chosen = usable.find((c) => c.id === command.categoryId) ?? usable[0];
+        return done('Opening the add expense form', { type: 'new-expense', categoryId: chosen.id, categories: usable });
       }
 
       case 'user-status': {
@@ -538,7 +571,7 @@ export class VoiceService {
       }
 
       case 'create-category': {
-        const result = await this.createCategory(transcript, user, entryAi);
+        const result = await this.createCategory(transcript, user, ai);
         const { parsed, category: created } = result;
         const entry = { kind: 'category' as const, ...result };
         if (created) {
@@ -555,7 +588,7 @@ export class VoiceService {
       }
 
       case 'add-expense': {
-        const result = await this.createExpense(transcript, user, null, entryAi);
+        const result = await this.createExpense(transcript, user, null, ai);
         const { parsed, expense } = result;
         const entry = { kind: 'expense' as const, ...result };
         if (expense) {
@@ -573,9 +606,9 @@ export class VoiceService {
         return {
           ...fail(
             question ||
-            parsed.missing.includes('category')
-              ? 'Which category? Say for example "food 500 lunch"'
-              : 'How much was it? Say for example "food 500 lunch"',
+              (parsed.missing.includes('category')
+                ? 'Which category? Say for example "food 500 lunch"'
+                : 'How much was it? Say for example "food 500 lunch"'),
           ),
           entry,
         };
@@ -588,9 +621,13 @@ export class VoiceService {
       case 'logout':
         return done('Logging out', { type: 'logout' });
       case 'help':
-        return done('Here is what you can say', { type: 'help' });
+        return done('Say what you want in your own words: add, show, change or delete a category or an expense', { type: 'help' });
       default:
-        return fail(`Sorry, I didn't understand "${transcript.trim()}". Say "help" to see what works.`);
+        return fail(
+          ai.intent === 'unknown'
+            ? `Sorry, I didn't understand "${transcript.trim()}"`
+            : "I couldn't tell which category or user you mean — say the name as it appears in the app",
+        );
     }
   }
 

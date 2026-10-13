@@ -3,7 +3,7 @@ import { BadRequestException, ServiceUnavailableException } from '@nestjs/common
 import { readFile } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
 import { RECEIPT_URL_PATTERN, RECEIPTS_DIR } from '../uploads/receipt-files.js';
-import { levenshtein, normalizeSpeech } from './voice-parser.js';
+import { CATEGORY_ICONS } from './voice-ai.js';
 
 const DEFAULT_MODEL = 'gpt-5.4-mini';
 const NO_CATEGORY = 'none';
@@ -29,8 +29,9 @@ export interface ReceiptLine {
 
 export interface ReadReceipt {
   categoryId: string | null;
-  /** The category name written on the image, whether or not it exists in the app. */
   writtenCategory: string;
+  /** Icon for `writtenCategory`, in case it gets created. */
+  icon: CategoryIcon;
   total: number | null;
   title: string;
   date: string | null;
@@ -40,9 +41,15 @@ export interface ReadReceipt {
 export interface ReadCategoryLine {
   name: string;
   budget: number | null;
+  icon: CategoryIcon;
 }
 
+type CategoryIcon = (typeof CATEGORY_ICONS)[number];
+
 let client: OpenAI | null = null;
+
+const ICON_SCHEMA = { type: 'string', enum: CATEGORY_ICONS };
+const knownIcon = (icon: string): CategoryIcon => (CATEGORY_ICONS.includes(icon as CategoryIcon) ? (icon as CategoryIcon) : 'folder');
 
 const money = (n: number | null) => (n !== null && n > 0 ? Math.round(n * 100) / 100 : null);
 
@@ -93,9 +100,10 @@ export async function readReceipt(receiptUrl: string, categories: ReceiptCategor
     {
       type: 'object',
       additionalProperties: false,
-      required: ['writtenCategory', 'categoryId', 'total', 'title', 'date', 'items'],
+      required: ['writtenCategory', 'icon', 'categoryId', 'total', 'title', 'date', 'items'],
       properties: {
         writtenCategory: { type: 'string' },
+        icon: ICON_SCHEMA,
         categoryId: categoryEnum,
         total: { type: ['number', 'null'] },
         title: { type: 'string' },
@@ -117,26 +125,18 @@ Categories the user can record expenses in (id: name):
 ${categoryList}
 
 Return:
-- writtenCategory: the category name written on the image, in Title Case; empty string if none is written. When there is a "Category" or "Categories" heading or column, this is the word written under or next to it (e.g. "Hostel"), never the heading word itself.
-- categoryId: when a category is written, the id of the existing category with that name, allowing for unclear handwriting and spelling ("Hostal" = "Hostel"); "${NO_CATEGORY}" when the written category is not in the list, never a different category instead. When nothing is written, the category that best fits the items, or "${NO_CATEGORY}".
+- writtenCategory: the category name written on the image, in Title Case; empty string if none is written. When there is a "Category" or "Categories" heading or column, this is the word written under or next to it, never the heading word itself.
+- icon: the icon that best fits writtenCategory; "folder" when none fits or nothing is written.
+- categoryId: when a category is written, the id of the existing category with that name, allowing for unclear handwriting and spelling; "${NO_CATEGORY}" when the written category is not in the list, never a different category instead. When nothing is written, the category that best fits the items, or "${NO_CATEGORY}".
 - items: every line that has its own amount, in the order written, with a short title, the amount as a number, and categoryId: the category written next to that line if the list gives one per line, otherwise the same as the overall categoryId. Skip subtotal, tax and total lines and the header row.
 - total: the grand total paid as a number, or null if none is written.
-- title: a short description of the whole receipt, under 80 characters, e.g. "Grocery at Imtiaz" or "Hostel expenses".
+- title: a short description of the whole receipt, under 80 characters.
 - date: the date on the receipt as YYYY-MM-DD, or null if there is none.`,
   );
 
   const known = (id: string | null | undefined) => (categories.some((c) => c.id === id) ? id! : null);
-  const writtenCategory = /^categor/i.test(out.writtenCategory.trim()) ? '' : out.writtenCategory.trim().slice(0, 100);
-  // Handwriting is often read a letter or two off ("Hotel", "Hostal"), so take the one clearly closest name.
-  const written = normalizeSpeech(writtenCategory);
-  const close = written
-    ? categories
-        .map((c) => ({ id: c.id, distance: levenshtein(normalizeSpeech(c.name), written) }))
-        .filter((c) => c.distance <= Math.max(1, Math.floor(written.length / 3)))
-        .sort((a, b) => a.distance - b.distance)
-    : [];
-  const byName = close.length && (close.length === 1 || close[0].distance < close[1].distance) ? close[0].id : null;
-  const categoryId = known(out.categoryId) ?? byName;
+  const writtenCategory = out.writtenCategory.trim().slice(0, 100);
+  const categoryId = known(out.categoryId);
   const items = out.items
     .map((line) => ({
       title: line.title.trim().slice(0, 200),
@@ -147,6 +147,7 @@ Return:
   return {
     categoryId,
     writtenCategory,
+    icon: knownIcon(out.icon),
     total: money(out.total) ?? money(items.reduce((sum, line) => sum + line.amount, 0)),
     title: out.title.trim().slice(0, 200) || 'Receipt',
     date: out.date && /^\d{4}-\d{2}-\d{2}$/.test(out.date) && out.date <= today ? out.date : null,
@@ -169,20 +170,21 @@ export async function readCategoryList(uploadUrl: string): Promise<ReadCategoryL
           items: {
             type: 'object',
             additionalProperties: false,
-            required: ['name', 'budget'],
-            properties: { name: { type: 'string' }, budget: { type: ['number', 'null'] } },
+            required: ['name', 'budget', 'icon'],
+            properties: { name: { type: 'string' }, budget: { type: ['number', 'null'] }, icon: ICON_SCHEMA },
           },
         },
       },
     },
-    `This image is a handwritten or printed list of expense categories to create, e.g. "Food 20000, Travel 5000". Amounts are monthly budgets in PKR.
+    `This image is a handwritten or printed list of expense categories to create. Amounts are monthly budgets in PKR.
 
 Return categories: one entry per line, in the order written, with
-- name: the category name in Title Case, under 40 characters, e.g. "Office Supplies".
-- budget: the budget as a number, or null if the line has no amount.`,
+- name: the category name in Title Case, under 40 characters.
+- budget: the budget as a number, or null if the line has no amount.
+- icon: the icon that best fits the category; "folder" when none fits.`,
   );
 
   return out.categories
-    .map((line) => ({ name: line.name.trim().slice(0, 100), budget: money(line.budget) }))
+    .map((line) => ({ name: line.name.trim().slice(0, 100), budget: money(line.budget), icon: knownIcon(line.icon) }))
     .filter((line) => !!line.name);
 }
