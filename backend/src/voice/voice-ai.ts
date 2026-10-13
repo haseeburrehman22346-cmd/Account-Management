@@ -29,6 +29,11 @@ export const VOICE_INTENTS = [
   'unknown',
 ] as const;
 
+/** The chat answers in place, so it never gets the intents that take the user to another page. */
+const PAGE_INTENTS: readonly string[] = ['navigate', 'open-category', 'back'];
+const intentsFor = (ctx: VoiceIntentContext) =>
+  ctx.mode === 'chat' ? VOICE_INTENTS.filter((i) => !PAGE_INTENTS.includes(i)) : VOICE_INTENTS;
+
 const PAGES = ['overview', 'categories', 'expenses', 'users', 'settings', 'voice'] as const;
 const THEMES = ['light', 'dark', 'system'] as const;
 const TARGETS = ['none', 'previous', 'search'] as const;
@@ -130,10 +135,11 @@ const list = (rows: { id: string; name: string; summary?: string }[]) =>
   rows.length ? rows.map((r) => `- ${r.id}: ${r.name}${r.summary ? ` (${r.summary})` : ''}`).join('\n') : '(none)';
 
 export function buildVoicePrompt(transcript: string, ctx: VoiceIntentContext) {
+  const chat = ctx.mode === 'chat';
   const situation = ctx.force
     ? `The sentence is known to be a "${ctx.force}" request; use that intent.`
-    : ctx.mode === 'chat'
-      ? 'The user is talking to the assistant in a chat, by typing or by voice. They may give a command, ask a question or just talk.'
+    : chat
+      ? 'The user is talking to the assistant in a chat, by typing or by voice. They may give a command, ask a question or just talk. The chat stays on its own page and cannot open or switch pages, so whatever the user wants to see, list or look up is answered in the chat itself with the data, using reply.'
       : ctx.mode
         ? `The user is on the "${ctx.mode === 'expense' ? 'add expense' : 'create category'}" tab of the voice page. That is only a hint for a sentence that could be read either way; any command can be spoken from any tab, so follow what the sentence asks for.`
         : 'The user spoke from somewhere in the app.';
@@ -173,7 +179,7 @@ Expense the conversation is about: ${last}
 ${recent}
 Pick the one intent that matches what the user wants done:
 - add-expense: record money that was spent. Naming an existing category while recording spending is still add-expense, not create-category. When a person is named together with an amount being put into a category, that person paid the expense (paidById); it is not an access change.
-- update-expense: an explicit instruction to change an existing expense. A question or statement about an expense's current value is not a change; show it with open-category or navigate and q instead.
+- update-expense: an explicit instruction to change an existing expense. A question or statement about an expense's current value is not a change; ${chat ? 'answer it in reply instead' : 'show it with open-category or navigate and q instead'}.
 - delete-expense: remove an expense.
 - create-category: make a category that does not exist yet. Only when the user asks for a new one; a request to change something about an existing category is never create-category.
 - rename-category: change the name of an existing category (categoryId) to a new name (name).
@@ -181,15 +187,19 @@ Pick the one intent that matches what the user wants done:
 - edit-expense: the same for an existing expense (target and q): the user wants to edit it but gives no new value.
 - new-category-form: the user asks for the empty form in which a new category is typed in, and gives no name or other details for it. When the sentence does give the details, use create-category.
 - new-expense-form: the same for a new expense: the user asks for the empty form and gives no amount or item. categoryId when the sentence names the category it is for.
-- navigate: go to a page (page) to look at what is on it, optionally searching it (q). A request for a form to add or edit something is not navigation, even when it mentions the page's name.
+${
+  chat
+    ? ''
+    : `- navigate: go to a page (page) to look at what is on it, optionally searching it (q). A request for a form to add or edit something is not navigation, even when it mentions the page's name.
 - open-category: open, list or show one existing category's expenses, or find something inside it (q).
-- total: the user asks how much was spent, overall or in one category.
+`
+}- total: the user asks how much was spent, overall or in one category.
 - access: give or take away a user's access to a category (grant true/false), with no amount involved.
 - category-status / user-status: activate or deactivate a category or a user (active true/false).
 - budget: set the monthly budget of an existing category (amount). Users may call the budget the category's amount or limit. When an amount is given to the category itself and the sentence names nothing bought, no spending and no payer, it is budget rather than add-expense, whatever tab the user is on.
 - delete-category / delete-user: remove a category or a user.
-- theme: switch theme. back: go back. logout: sign out. help: the user asks what can be said.
-- unknown: nothing has to be done in the app: the user is greeting, chatting or asking a question. Answer it yourself in reply. Anything you can work out from the lists above is such a question: counting, listing, comparing, adding up, finding the biggest or the latest.
+- theme: switch theme. ${chat ? '' : 'back: go back. '}logout: sign out. help: the user asks what can be said.
+- unknown: nothing has to be done in the app: the user is greeting, chatting${chat ? ', asking a question or asking to be shown something' : ' or asking a question'}. Answer it yourself in reply. Anything you can work out from the lists above is such a question: counting, listing, comparing, adding up, finding the biggest or the latest.
 
 People correct themselves while speaking. When the sentence gives the same field more than once, the last value is the one they mean. A name the user gives as the expense's name is the title, not a user.
 
@@ -210,7 +220,7 @@ Fill the fields (use "${NONE}", "", null or [] for anything that does not apply)
 - period: for total, "this-month" when the sentence asks about this month, else "all".
 - page, theme, grant, active: the value the intent needs.
 - clarification: when the sentence is ambiguous or misses something you cannot carry it out without, a short question in the user's language. Ask instead of guessing: never invent a category, amount, name or record. A missing amount or category for add-expense deserves a question, and so does a name that fits more than one listed user or category equally well. Empty string otherwise.
-- reply: for unknown only, your answer to the user. Answer directly and completely, as a helpful assistant would: work the answer out from the categories, users, expenses and conversation above (count them, list them, add them up, compare them), and answer general questions from your own knowledge. Do not talk about intents, actions or what you are able to do instead of answering, and do not ask the user to confirm a question whose meaning is clear despite typos. Only when the answer needs data that is not shown above, say what is missing. Write in the same language and script as the sentence itself, whatever language the earlier conversation or the data is in: an English sentence gets an English answer, a Roman Urdu sentence a Roman Urdu answer. Use plain text without markdown, as short as the answer allows. Never say that something was added, changed or deleted, because with this intent nothing is. Empty string for every other intent.`;
+- reply: for unknown only, your answer to the user. Answer directly and completely, as a helpful assistant would: work the answer out from the categories, users, expenses and conversation above (count them, list them, add them up, compare them). You only help with this expense tracker: its categories, expenses, budgets, users, and how to use the app. When the sentence asks about anything else, whatever the topic, do not answer it from your own knowledge; say in one short sentence that you can only help with this app's expenses and categories. A greeting or small talk gets a short friendly answer. Do not talk about intents, actions or what you are able to do instead of answering, and do not ask the user to confirm a question whose meaning is clear despite typos. Only when the answer needs data that is not shown above, say what is missing. Write in the same language and script as the sentence itself, whatever language the earlier conversation or the data is in: an English sentence gets an English answer, a Roman Urdu sentence a Roman Urdu answer. Use plain text without markdown, as short as the answer allows. Never say that something was added, changed or deleted, because with this intent nothing is. Empty string for every other intent.`;
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -221,7 +231,7 @@ const positive = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) &&
 
 /** Checks the model's JSON against the app's lists; null when it isn't usable at all. */
 export function validateVoiceIntent(raw: unknown, ctx: VoiceIntentContext): VoiceIntent | null {
-  if (!isObject(raw) || !VOICE_INTENTS.includes(raw.intent as VoiceIntent['intent'])) return null;
+  if (!isObject(raw) || !intentsFor(ctx).includes(raw.intent as VoiceIntent['intent'])) return null;
   const pastDate = (v: unknown) => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && v <= ctx.today ? v : null);
   const userId = (v: unknown) => (ctx.users.some((u) => u.id === v) ? (v as string) : null);
   const updates = isObject(raw.updates) ? raw.updates : {};
@@ -254,13 +264,14 @@ export async function readVoiceIntent(transcript: string, ctx: VoiceIntentContex
   if (!process.env.OPENAI_API_KEY) return null;
   client ??= new OpenAI();
 
+  const schema = { ...SCHEMA, properties: { ...SCHEMA.properties, intent: { type: 'string', enum: intentsFor(ctx) } } };
   try {
     const completion = await client.chat.completions.create(
       {
         model: process.env.OPENAI_MODEL || DEFAULT_MODEL,
         max_completion_tokens: 4000,
         reasoning_effort: (process.env.OPENAI_VOICE_REASONING as OpenAI.ReasoningEffort) || 'low',
-        response_format: { type: 'json_schema', json_schema: { name: 'voice_intent', strict: true, schema: SCHEMA } },
+        response_format: { type: 'json_schema', json_schema: { name: 'voice_intent', strict: true, schema } },
         messages: [{ role: 'user', content: buildVoicePrompt(transcript, ctx) }],
       },
       { timeout: 10000 },

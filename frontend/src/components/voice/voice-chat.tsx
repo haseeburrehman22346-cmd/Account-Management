@@ -71,8 +71,9 @@ export function VoiceChat() {
         const result = await voiceService.command(text, "chat", reset);
         push("assistant", result.message, result.ok);
         if (store.speak) say(result.message);
-        // The assistant in the app shell carries out the action; after saving something the chat stays open.
-        const detail: VoiceCommandResult = { ...result, quiet: true, action: result.changed ? { type: "none" } : result.action };
+        // The assistant in the app shell carries out the action, except the ones that would leave the chat.
+        const leaves = result.changed || result.action.type === "navigate" || result.action.type === "back";
+        const detail: VoiceCommandResult = { ...result, quiet: true, action: leaves ? { type: "none" } : result.action };
         window.dispatchEvent(new CustomEvent(VOICE_RESULT_EVENT, { detail }));
       } catch (err) {
         setFailed({ text, reset, message: errorMessage(err) });

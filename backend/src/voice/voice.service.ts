@@ -113,6 +113,8 @@ const CONVERSATION_TTL_MS = 30 * 60 * 1000;
 const CONVERSATION_TURNS = 10;
 /** How many of the newest expenses the chat assistant is shown to answer questions from. */
 const CHAT_EXPENSES = 50;
+/** How many matches the chat lists when a sentence fits more than one expense. */
+const CHAT_MATCHES = 5;
 
 export type VoiceMode = 'expense' | 'category' | 'chat';
 
@@ -394,10 +396,20 @@ export class VoiceService {
         }
       }
       if (!c.q) return fail('Which expense? Say its name, for example "Dell battery ka amount 1500 kar do"');
-      const found = await this.expenses.search(user, { q: c.q, categoryId: c.categoryId ?? undefined, page: 1, limit: 2 });
+      const found = await this.expenses.search(user, {
+        q: c.q,
+        categoryId: c.categoryId ?? undefined,
+        page: 1,
+        limit: mode === 'chat' ? CHAT_MATCHES : 2,
+      });
       const hit = found.items[0];
       if (!hit) return fail(`No expense matching "${c.q}"`);
       if (found.total > 1) {
+        if (mode === 'chat') {
+          const lines = found.items.map((e) => `- ${e.title}, ${money(e.amount)}, ${e.category.name}, ${e.date}`);
+          if (found.total > lines.length) lines.push(`…and ${found.total - lines.length} more`);
+          return done(`${found.total} expenses match "${c.q}" — which one?\n${lines.join('\n')}`);
+        }
         return done(
           `${found.total} expenses match "${c.q}" — say which one, or pick it from the list`,
           isAdmin && !c.categoryId
