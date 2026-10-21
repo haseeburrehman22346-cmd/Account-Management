@@ -10,7 +10,6 @@ export class Expense {
 
   @Prop({ required: true, trim: true })
   title: string;
-
   @Prop({ required: true })
   amountCents: number;
 
